@@ -7,8 +7,8 @@ use futures::stream::BoxStream;
 use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
 use libp2p_core::muxing::StreamMuxerEvent;
 use libp2p_core::transport::{Boxed, ListenerEvent};
-use libp2p_core::upgrade::{from_fn, Version};
-use libp2p_core::{Endpoint, Negotiated, StreamMuxer};
+use libp2p_core::upgrade::Version;
+use libp2p_core::{Negotiated, StreamMuxer};
 use libp2p_noise as noise;
 use libp2p_noise::NoiseOutput;
 use libp2p_yamux::{Incoming, Yamux, YamuxConfig};
@@ -98,7 +98,7 @@ impl<S> Clone for Connection<S> {
         Self {
             peer: self.peer,
             inner: self.inner.clone(),
-            supported_protocols: self.supported_protocols.clone()
+            supported_protocols: self.supported_protocols.clone(),
         }
     }
 }
