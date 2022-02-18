@@ -1,30 +1,30 @@
 pub use libp2p_core as libp2p;
 use std::io;
-use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::stream::BoxStream;
-use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
-use libp2p_core::muxing::StreamMuxerEvent;
+use futures::{AsyncRead, AsyncWrite, FutureExt, StreamExt, TryStreamExt};
+use futures::future::BoxFuture;
 use libp2p_core::transport::{Boxed, ListenerEvent};
 use libp2p_core::upgrade::Version;
-use libp2p_core::{Negotiated, StreamMuxer};
+use libp2p_core::{upgrade, Endpoint, Negotiated};
 use libp2p_noise as noise;
 use libp2p_noise::NoiseOutput;
-use libp2p_yamux::{Incoming, Yamux, YamuxConfig};
+use void::Void;
+use yamux::Mode;
 
 use crate::libp2p::identity::Keypair;
 use crate::libp2p::Multiaddr;
 use crate::libp2p::PeerId;
 use crate::libp2p::Transport;
 
-pub struct Node<S> {
-    inner: Boxed<Connection<S>>,
+type Connection = (PeerId, Box<dyn Fn(&'static str) -> BoxFuture<'static, Result<Negotiated<yamux::Stream>>>>, BoxStream<'static, Result<(Negotiated<yamux::Stream>, &'static str)>>);
+
+pub struct Node {
+    inner: Boxed<Connection>,
 }
 
-impl<S> Node<S>
-where
-    S: 'static,
+impl Node
 {
     pub fn new<T>(
         transport: T,
@@ -32,7 +32,7 @@ where
         supported_protocols: Vec<&'static str>,
     ) -> Result<Self>
     where
-        T: Transport<Output = S> + Clone + Send + Sync + 'static,
+        T: Transport + Clone + Send + Sync + 'static,
         T::Output: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         T::Error: Send + Sync,
         T::Listener: Send + 'static,
@@ -42,25 +42,90 @@ where
         let identity = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&identity)?;
 
         let stream = transport
-            .upgrade(Version::V1)
-            .authenticate(noise::NoiseConfig::xx(identity).into_authenticated())
-            .multiplex(YamuxConfig::default());
+            .and_then(|conn, endpoint| {
+                upgrade::apply(
+                    conn,
+                    noise::NoiseConfig::xx(identity).into_authenticated(),
+                    endpoint,
+                    Version::V1,
+                )
+            })
+            .and_then(|(peer_id, conn), endpoint| {
+                upgrade::apply(
+                    conn,
+                    upgrade::from_fn::<_, _, _, _, _, Void>(
+                        b"/yamux/1.0.0",
+                        move |conn, endpoint| async move {
+                            Ok(match endpoint {
+                                Endpoint::Dialer => (
+                                    peer_id,
+                                    yamux::Connection::new(
+                                        conn,
+                                        yamux::Config::default(),
+                                        Mode::Client,
+                                    ),
+                                ),
+                                Endpoint::Listener => (
+                                    peer_id,
+                                    yamux::Connection::new(
+                                        conn,
+                                        yamux::Config::default(),
+                                        Mode::Server,
+                                    ),
+                                ),
+                            })
+                        },
+                    ),
+                    endpoint,
+                    Version::V1,
+                )
+            })
+            .map(move |(peer, connection), _| {
+                let control = connection.control();
+
+                let new_stream = Box::new({
+                    let supported_protocols = supported_protocols.clone();
+
+                    move |protocol| {
+                        let mut control = control.clone();
+                        let supported_protocols = supported_protocols.clone();
+
+                        async move {
+                            let stream = control.open_stream().await?;
+
+                            let (negotiated_protocol, stream) =
+                                multistream_select::dialer_select_proto(stream, &supported_protocols, Version::V1).await?;
+
+                            anyhow::ensure!(*negotiated_protocol == protocol);
+
+                            anyhow::Ok(stream)
+                        }.boxed()
+                    }
+                }) as Box<dyn Fn(&'static str) -> BoxFuture<'static, Result<Negotiated<yamux::Stream>>>>;
+
+                let incoming = yamux::into_stream(connection).err_into::<anyhow::Error>().and_then(move |stream| {
+                    let supported_protocols = supported_protocols.clone();
+
+                    async move {
+                        let (protocol, stream) =
+                            multistream_select::listener_select_proto(stream, &supported_protocols).await?;
+
+                        anyhow::Ok((stream, *protocol))
+                    }
+                }).boxed();
+
+                (peer, new_stream, incoming)
+            });
 
         Ok(Self {
-            inner: libp2p::transport::boxed::boxed(stream.map(|(peer, connection), _| {
-                Connection {
-                    peer,
-                    inner: Arc::new(connection),
-                    supported_protocols,
-                }
-            })),
+            inner: libp2p::transport::boxed::boxed(stream),
         })
     }
 
     pub fn listen_on(
         &self,
         address: Multiaddr,
-    ) -> Result<BoxStream<'static, io::Result<Connection<S>>>> {
+    ) -> Result<BoxStream<'static, io::Result<Connection>>> {
         let stream = self
             .inner
             .clone()
@@ -78,58 +143,10 @@ where
         Ok(stream)
     }
 
-    pub async fn connect(&self, address: Multiaddr) -> Result<Connection<S>> {
+    pub async fn connect(&self, address: Multiaddr) -> Result<Connection> {
         let connection = self.inner.clone().dial(address)?.await?;
 
         Ok(connection)
     }
 }
 
-pub type Substream = Negotiated<yamux::Stream>;
-
-pub struct Connection<S> {
-    peer: PeerId,
-    inner: Arc<Yamux<Incoming<Negotiated<NoiseOutput<Negotiated<S>>>>>>,
-    supported_protocols: Vec<&'static str>,
-}
-
-impl<S> Clone for Connection<S> {
-    fn clone(&self) -> Self {
-        Self {
-            peer: self.peer,
-            inner: self.inner.clone(),
-            supported_protocols: self.supported_protocols.clone(),
-        }
-    }
-}
-
-impl<S> Connection<S> {
-    pub fn peer(&self) -> PeerId {
-        self.peer
-    }
-
-    pub async fn new_outbound_substream(&self, protocol: &'static str) -> Result<Substream> {
-        let mut token = self.inner.open_outbound();
-        let stream =
-            futures::future::poll_fn(|cx| self.inner.poll_outbound(cx, &mut token)).await?;
-        let (negotiated_protocol, stream) =
-            multistream_select::dialer_select_proto(stream, &self.supported_protocols, Version::V1)
-                .await?;
-
-        anyhow::ensure!(*negotiated_protocol == protocol);
-
-        Ok(stream)
-    }
-
-    pub async fn next_inbound_substream(&self) -> Result<(Substream, &'static str)> {
-        let stream = match futures::future::poll_fn(|cx| self.inner.poll_event(cx)).await? {
-            StreamMuxerEvent::InboundSubstream(stream) => stream,
-            StreamMuxerEvent::AddressChange(_) => panic!("never emitted as per docs"),
-        };
-
-        let (protocol, stream) =
-            multistream_select::listener_select_proto(stream, &self.supported_protocols).await?;
-
-        Ok((stream, *protocol))
-    }
-}
