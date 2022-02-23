@@ -24,6 +24,7 @@ pub type Connection = (
     BoxStream<'static, Result<(Negotiated<yamux::Stream>, &'static str)>>,
 );
 
+#[derive(Clone)]
 pub struct Node {
     inner: Boxed<Connection>,
 }
@@ -137,6 +138,8 @@ impl Node {
     }
 
     pub async fn connect(&self, address: Multiaddr) -> Result<Connection> {
+        // TODO: Either assume `Multiaddr` ends with a `PeerId` or pass it in separately.
+
         let connection = self.inner.clone().dial(address)?.await?;
 
         Ok(connection)
