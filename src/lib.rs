@@ -1,15 +1,15 @@
 pub use libp2p_core as libp2p;
 use std::io;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::stream::BoxStream;
-use futures::{AsyncRead, AsyncWrite, FutureExt, StreamExt, TryStreamExt};
-use futures::future::BoxFuture;
+use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
+use libp2p_core::transport::timeout::TransportTimeout;
 use libp2p_core::transport::{Boxed, ListenerEvent};
 use libp2p_core::upgrade::Version;
 use libp2p_core::{upgrade, Endpoint, Negotiated};
 use libp2p_noise as noise;
-use libp2p_noise::NoiseOutput;
 use void::Void;
 use yamux::Mode;
 
@@ -18,18 +18,22 @@ use crate::libp2p::Multiaddr;
 use crate::libp2p::PeerId;
 use crate::libp2p::Transport;
 
-type Connection = (PeerId, Box<dyn Fn(&'static str) -> BoxFuture<'static, Result<Negotiated<yamux::Stream>>>>, BoxStream<'static, Result<(Negotiated<yamux::Stream>, &'static str)>>);
+pub type Connection = (
+    PeerId,
+    Control,
+    BoxStream<'static, Result<(Negotiated<yamux::Stream>, &'static str)>>,
+);
 
 pub struct Node {
     inner: Boxed<Connection>,
 }
 
-impl Node
-{
+impl Node {
     pub fn new<T>(
         transport: T,
         identity: Keypair,
         supported_protocols: Vec<&'static str>,
+        upgrade_timeout: Duration,
     ) -> Result<Self>
     where
         T: Transport + Clone + Send + Sync + 'static,
@@ -81,44 +85,33 @@ impl Node
                 )
             })
             .map(move |(peer, connection), _| {
-                let control = connection.control();
+                let control = Control {
+                    inner: connection.control(),
+                    supported_protocols: supported_protocols.clone(),
+                };
 
-                let new_stream = Box::new({
-                    let supported_protocols = supported_protocols.clone();
-
-                    move |protocol| {
-                        let mut control = control.clone();
+                let incoming = yamux::into_stream(connection)
+                    .err_into::<anyhow::Error>()
+                    .and_then(move |stream| {
                         let supported_protocols = supported_protocols.clone();
 
                         async move {
-                            let stream = control.open_stream().await?;
+                            let (protocol, stream) = multistream_select::listener_select_proto(
+                                stream,
+                                &supported_protocols,
+                            )
+                            .await?;
 
-                            let (negotiated_protocol, stream) =
-                                multistream_select::dialer_select_proto(stream, &supported_protocols, Version::V1).await?;
+                            anyhow::Ok((stream, *protocol))
+                        }
+                    })
+                    .boxed();
 
-                            anyhow::ensure!(*negotiated_protocol == protocol);
-
-                            anyhow::Ok(stream)
-                        }.boxed()
-                    }
-                }) as Box<dyn Fn(&'static str) -> BoxFuture<'static, Result<Negotiated<yamux::Stream>>>>;
-
-                let incoming = yamux::into_stream(connection).err_into::<anyhow::Error>().and_then(move |stream| {
-                    let supported_protocols = supported_protocols.clone();
-
-                    async move {
-                        let (protocol, stream) =
-                            multistream_select::listener_select_proto(stream, &supported_protocols).await?;
-
-                        anyhow::Ok((stream, *protocol))
-                    }
-                }).boxed();
-
-                (peer, new_stream, incoming)
+                (peer, control, incoming)
             });
 
         Ok(Self {
-            inner: libp2p::transport::boxed::boxed(stream),
+            inner: libp2p::transport::boxed::boxed(TransportTimeout::new(stream, upgrade_timeout)),
         })
     }
 
@@ -150,3 +143,24 @@ impl Node
     }
 }
 
+pub struct Control {
+    inner: yamux::Control,
+    supported_protocols: Vec<&'static str>,
+}
+
+impl Control {
+    pub async fn open_substream(
+        &mut self,
+        protocol: &'static str,
+    ) -> Result<Negotiated<yamux::Stream>> {
+        let stream = self.inner.open_stream().await?;
+
+        let (negotiated_protocol, stream) =
+            multistream_select::dialer_select_proto(stream, &self.supported_protocols, Version::V1)
+                .await?;
+
+        anyhow::ensure!(*negotiated_protocol == protocol);
+
+        Ok(stream)
+    }
+}

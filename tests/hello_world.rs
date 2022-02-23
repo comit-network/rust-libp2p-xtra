@@ -1,11 +1,11 @@
 use anyhow::Context;
 use anyhow::Result;
 use asynchronous_codec::Bytes;
-use futures::{SinkExt, StreamExt};
-use libp2p_core::Negotiated;
+use futures::{SinkExt, Stream, StreamExt};
 use libp2p_core::transport::MemoryTransport;
-use libp2p_stream::{Node};
-use libp2p_tcp::TokioTcpConfig;
+use libp2p_core::Negotiated;
+use libp2p_stream::{Connection, Node};
+use std::time::Duration;
 
 #[tokio::test]
 async fn hello_world() {
@@ -16,55 +16,51 @@ async fn hello_world() {
     let bob = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
 
     let alice = Node::new(
-        TokioTcpConfig::new(),
+        MemoryTransport::default(),
         alice.clone(),
         vec!["/hello-world/1.0.0"],
+        Duration::from_secs(20),
     )
     .unwrap();
     let bob = Node::new(
-        TokioTcpConfig::new(),
+        MemoryTransport::default(),
         bob.clone(),
         vec!["/hello-world/1.0.0"],
+        Duration::from_secs(20),
     )
     .unwrap();
 
     let mut alice_inc = alice
-        .listen_on("/ip4/127.0.0.1/tcp/8080".parse().unwrap())
+        .listen_on("/memory/10000".parse().unwrap())
         .unwrap()
         .fuse();
 
     let (alice_conn, bob_conn) = tokio::join!(
         alice_inc.select_next_some(),
-        bob.connect("/ip4/127.0.0.1/tcp/8080".parse().unwrap())
+        bob.connect("/memory/10000".parse().unwrap())
     );
-    let (_, alice_new_stream, mut alice_streams) = alice_conn.unwrap();
-    let (_, bob_new_stream, mut bob_streams) = bob_conn.unwrap();
+    let (_, mut alice_control, alice_streams) = alice_conn.unwrap();
+    let (_, _bob_control, bob_streams) = bob_conn.unwrap();
 
-    tokio::spawn(async move {
-       loop {
-           let stream = alice_streams.next().await.unwrap().unwrap();
+    tokio::spawn(substream_handler(alice_streams));
+    tokio::spawn(substream_handler(bob_streams));
 
-           dbg!(stream.1);
-       }
-    });
+    let alice_hello_world = alice_control
+        .open_substream("/hello-world/1.0.0")
+        .await
+        .unwrap();
 
-    let (alice_hello_world, bob_hello_world) = tokio::join!(alice_new_stream("/hello-world/1.0.0"), bob_streams.next());
-    let alice_hello_world = alice_hello_world.unwrap();
-    let (bob_hello_world, protocol) = bob_hello_world.unwrap().unwrap();
-
-    assert_eq!(protocol, "/hello-world/1.0.0");
-
-    let alice_proto = hello_world_dialer(alice_hello_world, "Alice");
-    let bob_proto = hello_world_listener(bob_hello_world);
-
-    let (alice_out, bob_out) = tokio::join!(alice_proto, bob_proto);
-    let alice_out = alice_out.unwrap();
-    bob_out.unwrap();
+    let alice_out = hello_world_dialer(alice_hello_world, "Alice")
+        .await
+        .unwrap();
 
     assert_eq!(&alice_out, "Hello Alice!")
 }
 
-async fn hello_world_dialer(stream: Negotiated<yamux::Stream>, name: &'static str) -> Result<String> {
+async fn hello_world_dialer(
+    stream: Negotiated<yamux::Stream>,
+    name: &'static str,
+) -> Result<String> {
     let mut stream = asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec);
 
     stream.send(Bytes::from(name)).await?;
@@ -84,4 +80,21 @@ async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
     stream.send(Bytes::from(format!("Hello {name}!"))).await?;
 
     Ok(())
+}
+
+async fn substream_handler(
+    mut new_substreams: impl Stream<Item = Result<(Negotiated<yamux::Stream>, &'static str)>> + Unpin,
+) {
+    loop {
+        let (stream, protocol) = new_substreams.next().await.unwrap().unwrap();
+
+        match protocol {
+            "/hello-world/1.0.0" => {
+                tokio::spawn(async move {
+                    hello_world_listener(stream).await.unwrap();
+                });
+            }
+            _ => panic!("Unsupported protocol!"),
+        }
+    }
 }
