@@ -4,7 +4,7 @@ use asynchronous_codec::Bytes;
 use futures::{SinkExt, Stream, StreamExt};
 use libp2p_core::transport::MemoryTransport;
 use libp2p_core::Negotiated;
-use libp2p_stream::{Connection, Node};
+use libp2p_stream::Node;
 use std::time::Duration;
 
 #[tokio::test]
