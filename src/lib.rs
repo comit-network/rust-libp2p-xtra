@@ -108,7 +108,7 @@ impl Node {
                             multistream_select::listener_select_proto(stream, &supported_protocols)
                                 .await?;
 
-                        anyhow::Ok((stream, *protocol))
+                        anyhow::Ok((stream, *protocol)) // TODO: Do not return anyhow here so we can track protocol negotiation failures separately!
                     }
                 })
                 .boxed();
@@ -132,7 +132,7 @@ impl Node {
             .clone()
             .listen_on(address)?
             .map_ok(|e| match e {
-                ListenerEvent::NewAddress(_) => Ok(None),
+                ListenerEvent::NewAddress(_) => Ok(None), // TODO: Should we map these as well? How do we otherwise track our listeners?
                 ListenerEvent::Upgrade { upgrade, .. } => Ok(Some(upgrade)),
                 ListenerEvent::AddressExpired(_) => Ok(None),
                 ListenerEvent::Error(e) => Err(e),
@@ -163,6 +163,8 @@ impl Control {
         &mut self,
         protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
     ) -> Result<Negotiated<yamux::Stream>> {
+        // TODO: Return a proper error enum here!
+
         let stream = self.inner.open_stream().await?;
 
         let (negotiated_protocol, stream) =
