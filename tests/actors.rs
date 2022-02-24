@@ -257,11 +257,8 @@ impl Dialer {
 
         Ok(stream)
     }
-}
 
-#[xtra_productivity(message_impl = false)]
-impl Dialer {
-    async fn handle(&mut self, msg: ListenerFailed) {}
+    async fn handle(&mut self, msg: ConnectionFailed) {}
 }
 
 #[async_trait]
@@ -349,13 +346,17 @@ impl xtra::Actor for Dialer {
                 }
             },
             move |error| async move {
-                let _ = this.send(ListenerFailed { error }).await;
+                let _ = this.send(ConnectionFailed { error }).await;
             },
         );
     }
 }
 
 struct ListenerFailed {
+    error: anyhow::Error,
+}
+
+struct ConnectionFailed {
     error: anyhow::Error,
 }
 
