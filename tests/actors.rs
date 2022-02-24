@@ -24,7 +24,7 @@ async fn actor_system() {
     let (hello_world_handler, future) = HelloWorld::default().create(None).run();
     tasks.add(future);
 
-    let (alice, alice_fut) = Listener::new(
+    let (alice, alice_fut) = Network::listener(
         MemoryTransport::default(),
         alice_id.clone(),
         "/memory/10000".parse().unwrap(),
@@ -34,7 +34,7 @@ async fn actor_system() {
     .run();
     tasks.add(alice_fut);
 
-    let (bob, bob_fut) = Dialer::new(
+    let (bob, bob_fut) = Network::dialer(
         MemoryTransport::default(),
         bob_id,
         "/memory/10000".parse().unwrap(),
@@ -45,7 +45,8 @@ async fn actor_system() {
     tasks.add(bob_fut);
 
     let bob_to_alice = bob
-        .send(OpenSubstream {
+        .send(OpenSubstreamToPeer {
+            peer: alice_id.public().to_peer_id(),
             protocol: "/hello-world/1.0.0",
         })
         .await
@@ -103,26 +104,13 @@ async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
 
 impl xtra::Actor for HelloWorld {}
 
-struct Listener {
+struct Network {
     node: Node,
-    listen_address: Multiaddr,
+    mode: Mode,
     tasks: Tasks,
     controls: HashMap<PeerId, Control>,
     inbound_substream_channels:
         HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
-}
-
-struct Dialer {
-    node: Node,
-    address: Multiaddr,
-    tasks: Tasks,
-    control: Option<Control>,
-    inbound_substream_channels:
-        HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
-}
-
-struct Connect {
-    pub address: Multiaddr,
 }
 
 struct OpenSubstreamToPeer {
@@ -130,12 +118,8 @@ struct OpenSubstreamToPeer {
     pub protocol: &'static str,
 }
 
-struct OpenSubstream {
-    pub protocol: &'static str,
-}
-
-impl Listener {
-    fn new<T, const N: usize>(
+impl Network {
+    fn listener<T, const N: usize>(
         transport: T,
         identity: Keypair,
         listen_address: Multiaddr,
@@ -152,29 +136,47 @@ impl Listener {
         T::Dial: Send + 'static,
         T::ListenerUpgrade: Send + 'static,
     {
-        Self {
-            node: Node::new(
-                transport,
-                identity,
-                inbound_substream_handlers
-                    .iter()
-                    .map(|(proto, _)| *proto)
-                    .collect(),
-                Duration::from_secs(20),
-            ),
-            tasks: Default::default(),
-            listen_address,
-            inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
-            controls: HashMap::default(),
-        }
+        Self::new(
+            transport,
+            identity,
+            Mode::Listener {
+                address: listen_address,
+            },
+            inbound_substream_handlers,
+        )
     }
-}
 
-impl Dialer {
+    fn dialer<T, const N: usize>(
+        transport: T,
+        identity: Keypair,
+        dial_address: Multiaddr,
+        inbound_substream_handlers: [(
+            &'static str,
+            Box<dyn StrongMessageChannel<NewInboundSubstream>>,
+        ); N],
+    ) -> Self
+    where
+        T: Transport + Clone + Send + Sync + 'static,
+        T::Output: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T::Error: Send + Sync,
+        T::Listener: Send + 'static,
+        T::Dial: Send + 'static,
+        T::ListenerUpgrade: Send + 'static,
+    {
+        Self::new(
+            transport,
+            identity,
+            Mode::Dialer {
+                address: dial_address,
+            },
+            inbound_substream_handlers,
+        )
+    }
+
     fn new<T, const N: usize>(
         transport: T,
         identity: Keypair,
-        address: Multiaddr,
+        mode: Mode,
         inbound_substream_handlers: [(
             &'static str,
             Box<dyn StrongMessageChannel<NewInboundSubstream>>,
@@ -198,16 +200,22 @@ impl Dialer {
                     .collect(),
                 Duration::from_secs(20),
             ),
-            tasks: Default::default(),
-            address,
+            mode,
+            tasks: Tasks::default(),
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
-            control: None,
+            controls: HashMap::default(),
         }
     }
 }
 
+#[derive(Clone)]
+enum Mode {
+    Listener { address: Multiaddr },
+    Dialer { address: Multiaddr },
+}
+
 #[xtra_productivity]
-impl Listener {
+impl Network {
     async fn handle(&mut self, msg: NewConnection, ctx: &mut Context<Self>) {
         let this = ctx.address().expect("we are alive");
 
@@ -255,6 +263,8 @@ impl Listener {
 
     async fn handle(&mut self, msg: ListenerFailed) {}
 
+    async fn handle(&mut self, msg: ConnectionFailed) {}
+
     async fn handle(&mut self, msg: OpenSubstreamToPeer) -> Result<Negotiated<yamux::Stream>> {
         let peer = msg.peer;
         let protocol = msg.protocol;
@@ -270,112 +280,92 @@ impl Listener {
     }
 }
 
-#[xtra_productivity]
-impl Dialer {
-    async fn handle(&mut self, msg: OpenSubstream) -> Result<Negotiated<yamux::Stream>> {
-        let protocol = msg.protocol;
-
-        let stream = self
-            .control
-            .as_mut()
-            .context("No connection")?
-            .open_substream(protocol)
-            .await?;
-
-        Ok(stream)
-    }
-
-    async fn handle(&mut self, msg: ConnectionFailed) {}
-}
-
 #[async_trait]
-impl xtra::Actor for Listener {
+impl xtra::Actor for Network {
     async fn started(&mut self, ctx: &mut Context<Self>) {
         let this = ctx.address().expect("we just started");
 
-        let mut stream = match self.node.listen_on(self.listen_address.clone()) {
-            Ok(stream) => stream,
-            Err(e) => {
-                // TODO: Handle error. Consider restart?
+        match self.mode.clone() {
+            Mode::Listener { address } => {
+                let mut stream = match self.node.listen_on(address) {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        // TODO: Handle error. Consider restart?
 
-                return;
+                        return;
+                    }
+                };
+
+                self.tasks.add_fallible(
+                    {
+                        let this = this.clone();
+
+                        async move {
+                            loop {
+                                let (peer, control, incoming_substreams) =
+                                    stream.try_next().await?.context("Listener closed")?;
+
+                                this.send(NewConnection {
+                                    peer,
+                                    control,
+                                    incoming_substreams,
+                                })
+                                .await?;
+                            }
+                        }
+                    },
+                    |error| async move {
+                        let _ = this.send(ListenerFailed { error }).await;
+                    },
+                );
             }
-        };
+            Mode::Dialer { address } => {
+                let (peer, control, mut incoming_substreams) =
+                    match self.node.connect(address).await {
+                        Ok(connection) => connection,
+                        Err(e) => {
+                            // TODO: Handle error. Consider restart?
 
-        self.tasks.add_fallible(
-            {
-                let this = this.clone();
+                            return;
+                        }
+                    };
 
-                async move {
-                    loop {
-                        let (peer, control, incoming_substreams) =
-                            stream.try_next().await?.context("Listener closed")?;
+                self.controls.insert(peer, control);
+                self.tasks.add_fallible(
+                    {
+                        let this = this.clone();
+                        let inbound_substream_channels = self
+                            .inbound_substream_channels
+                            .iter()
+                            .map(|(proto, channel)| {
+                                (
+                                    proto.to_owned(),
+                                    StrongMessageChannel::clone_channel(channel.as_ref()),
+                                )
+                            })
+                            .collect::<HashMap<_, _>>();
 
-                        this.send(NewConnection {
-                            peer,
-                            control,
-                            incoming_substreams,
-                        })
-                        .await?;
-                    }
-                }
-            },
-            |error| async move {
-                let _ = this.send(ListenerFailed { error }).await;
-            },
-        );
-    }
-}
+                        async move {
+                            loop {
+                                let (stream, protocol) = incoming_substreams
+                                    .try_next()
+                                    .await?
+                                    .context("Substream listener closed")?;
 
-#[async_trait]
-impl xtra::Actor for Dialer {
-    async fn started(&mut self, ctx: &mut Context<Self>) {
-        let this = ctx.address().expect("we just started");
+                                let channel = inbound_substream_channels
+                                    .get(&protocol)
+                                    .expect("Cannot negotiate a protocol that we don't support");
 
-        let (peer, control, mut incoming_substreams) =
-            match self.node.connect(self.address.clone()).await {
-                Ok(connection) => connection,
-                Err(e) => {
-                    // TODO: Handle error. Consider restart?
-
-                    return;
-                }
-            };
-
-        self.control = Some(control);
-        self.tasks.add_fallible(
-            {
-                let this = this.clone();
-                let inbound_substream_channels = self
-                    .inbound_substream_channels
-                    .iter()
-                    .map(|(proto, channel)| {
-                        (
-                            proto.to_owned(),
-                            StrongMessageChannel::clone_channel(channel.as_ref()),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
-
-                async move {
-                    loop {
-                        let (stream, protocol) = incoming_substreams
-                            .try_next()
-                            .await?
-                            .context("Substream listener closed")?;
-
-                        let channel = inbound_substream_channels
-                            .get(&protocol)
-                            .expect("Cannot negotiate a protocol that we don't support");
-
-                        let _ = channel.send(NewInboundSubstream { peer, stream }).await;
-                    }
-                }
-            },
-            move |error| async move {
-                let _ = this.send(ConnectionFailed { error }).await;
-            },
-        );
+                                let _ = channel.send(NewInboundSubstream { peer, stream }).await;
+                            }
+                        }
+                    },
+                    move |error| async move {
+                        let _ = this.send(ConnectionFailed { error }).await;
+                    },
+                );
+            }
+        }
     }
 }
 
