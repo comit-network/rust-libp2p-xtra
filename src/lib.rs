@@ -113,7 +113,7 @@ impl Node {
             });
 
         Self {
-            inner: libp2p::transport::boxed::boxed(TransportTimeout::new(stream, upgrade_timeout)),
+            inner: TransportTimeout::new(stream, upgrade_timeout).boxed(),
         }
     }
 
