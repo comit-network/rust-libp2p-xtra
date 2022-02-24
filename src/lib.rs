@@ -1,3 +1,5 @@
+mod verify_peer_id;
+
 pub use libp2p_core as libp2p;
 use std::io;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use crate::libp2p::identity::Keypair;
 use crate::libp2p::Multiaddr;
 use crate::libp2p::PeerId;
 use crate::libp2p::Transport;
+use crate::verify_peer_id::VerifyPeerId;
 
 pub type Connection = (
     PeerId,
@@ -48,72 +51,75 @@ impl Node {
             .into_authentic(&identity)
             .expect("ed25519 signing does not fail");
 
-        let stream = transport
-            .and_then(|conn, endpoint| {
-                upgrade::apply(
-                    conn,
-                    noise::NoiseConfig::xx(identity).into_authenticated(),
-                    endpoint,
-                    Version::V1,
-                )
-            })
-            .and_then(|(peer_id, conn), endpoint| {
-                upgrade::apply(
-                    conn,
-                    upgrade::from_fn::<_, _, _, _, _, Void>(
-                        b"/yamux/1.0.0",
-                        move |conn, endpoint| async move {
-                            Ok(match endpoint {
-                                Endpoint::Dialer => (
-                                    peer_id,
-                                    yamux::Connection::new(
-                                        conn,
-                                        yamux::Config::default(),
-                                        Mode::Client,
-                                    ),
+        let authenticated = transport.and_then(|conn, endpoint| {
+            upgrade::apply(
+                conn,
+                noise::NoiseConfig::xx(identity).into_authenticated(),
+                endpoint,
+                Version::V1,
+            )
+        });
+
+        let peer_id_verified = VerifyPeerId::new(authenticated);
+
+        let multiplexed = peer_id_verified.and_then(|(peer_id, conn), endpoint| {
+            upgrade::apply(
+                conn,
+                upgrade::from_fn::<_, _, _, _, _, Void>(
+                    b"/yamux/1.0.0",
+                    move |conn, endpoint| async move {
+                        Ok(match endpoint {
+                            Endpoint::Dialer => (
+                                peer_id,
+                                yamux::Connection::new(
+                                    conn,
+                                    yamux::Config::default(),
+                                    Mode::Client,
                                 ),
-                                Endpoint::Listener => (
-                                    peer_id,
-                                    yamux::Connection::new(
-                                        conn,
-                                        yamux::Config::default(),
-                                        Mode::Server,
-                                    ),
+                            ),
+                            Endpoint::Listener => (
+                                peer_id,
+                                yamux::Connection::new(
+                                    conn,
+                                    yamux::Config::default(),
+                                    Mode::Server,
                                 ),
-                            })
-                        },
-                    ),
-                    endpoint,
-                    Version::V1,
-                )
-            })
-            .map(move |(peer, connection), _| {
-                let control = Control {
-                    inner: connection.control(),
-                };
+                            ),
+                        })
+                    },
+                ),
+                endpoint,
+                Version::V1,
+            )
+        });
 
-                let incoming = yamux::into_stream(connection)
-                    .err_into::<anyhow::Error>()
-                    .and_then(move |stream| {
-                        let supported_protocols = supported_inbound_protocols.clone();
+        let protocols_negotiated = multiplexed.map(move |(peer, connection), _| {
+            let control = Control {
+                inner: connection.control(),
+            };
 
-                        async move {
-                            let (protocol, stream) = multistream_select::listener_select_proto(
-                                stream,
-                                &supported_protocols,
-                            )
-                            .await?;
+            let incoming = yamux::into_stream(connection)
+                .err_into::<anyhow::Error>()
+                .and_then(move |stream| {
+                    let supported_protocols = supported_inbound_protocols.clone();
 
-                            anyhow::Ok((stream, *protocol))
-                        }
-                    })
-                    .boxed();
+                    async move {
+                        let (protocol, stream) =
+                            multistream_select::listener_select_proto(stream, &supported_protocols)
+                                .await?;
 
-                (peer, control, incoming)
-            });
+                        anyhow::Ok((stream, *protocol))
+                    }
+                })
+                .boxed();
+
+            (peer, control, incoming)
+        });
+
+        let timeout_applied = TransportTimeout::new(protocols_negotiated, upgrade_timeout);
 
         Self {
-            inner: TransportTimeout::new(stream, upgrade_timeout).boxed(),
+            inner: timeout_applied.boxed(),
         }
     }
 

@@ -12,18 +12,18 @@ async fn hello_world() {
     // console_subscriber::init();
     env_logger::init();
 
-    let alice = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
-    let bob = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
+    let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
+    let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
 
     let alice = Node::new(
         MemoryTransport::default(),
-        alice.clone(),
+        alice_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
     );
     let bob = Node::new(
         MemoryTransport::default(),
-        bob.clone(),
+        bob_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
     );
@@ -35,7 +35,11 @@ async fn hello_world() {
 
     let (alice_conn, bob_conn) = tokio::join!(
         alice_inc.select_next_some(),
-        bob.connect("/memory/10000".parse().unwrap())
+        bob.connect(
+            format!("/memory/10000/p2p/{}", alice_id.public().to_peer_id())
+                .parse()
+                .unwrap()
+        )
     );
     let (_, mut alice_control, alice_streams) = alice_conn.unwrap();
     let (_, _bob_control, bob_streams) = bob_conn.unwrap();

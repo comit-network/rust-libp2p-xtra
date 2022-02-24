@@ -37,7 +37,9 @@ async fn actor_system() {
     let (bob, bob_fut) = Network::dialer(
         MemoryTransport::default(),
         bob_id,
-        "/memory/10000".parse().unwrap(),
+        format!("/memory/10000/p2p/{}", alice_id.public().to_peer_id())
+            .parse()
+            .unwrap(),
         [],
     )
     .create(None)
@@ -227,7 +229,6 @@ impl Network {
 
         self.tasks.add_fallible(
             {
-                let this = this.clone();
                 let inbound_substream_channels = self
                     .inbound_substream_channels
                     .iter()
@@ -243,7 +244,7 @@ impl Network {
                     loop {
                         let (stream, protocol) = incoming_substreams
                             .try_next()
-                            .await?
+                            .await? // TODO: This fails if we can't negotiate a protocol, must not abort the loop!!
                             .context("Substream listener closed")?;
 
                         let channel = inbound_substream_channels
@@ -261,9 +262,13 @@ impl Network {
         self.controls.insert(peer, control);
     }
 
-    async fn handle(&mut self, msg: ListenerFailed) {}
+    async fn handle(&mut self, msg: ListenerFailed) {
+        eprintln!("ListenerFailed: {:#}", msg.error)
+    }
 
-    async fn handle(&mut self, msg: ConnectionFailed) {}
+    async fn handle(&mut self, msg: ConnectionFailed) {
+        eprintln!("ConnectionFailed: {:#}", msg.error)
+    }
 
     async fn handle(&mut self, msg: OpenSubstreamToPeer) -> Result<Negotiated<yamux::Stream>> {
         let peer = msg.peer;
@@ -289,8 +294,8 @@ impl xtra::Actor for Network {
             Mode::Listener { address } => {
                 let mut stream = match self.node.listen_on(address) {
                     Ok(stream) => stream,
-                    Err(e) => {
-                        // TODO: Handle error. Consider restart?
+                    Err(error) => {
+                        let _ = this.do_send_async(ListenerFailed { error }).await;
 
                         return;
                     }
@@ -323,8 +328,8 @@ impl xtra::Actor for Network {
                 let (peer, control, mut incoming_substreams) =
                     match self.node.connect(address).await {
                         Ok(connection) => connection,
-                        Err(e) => {
-                            // TODO: Handle error. Consider restart?
+                        Err(error) => {
+                            let _ = this.do_send_async(ConnectionFailed { error }).await;
 
                             return;
                         }
@@ -333,7 +338,6 @@ impl xtra::Actor for Network {
                 self.controls.insert(peer, control);
                 self.tasks.add_fallible(
                     {
-                        let this = this.clone();
                         let inbound_substream_channels = self
                             .inbound_substream_channels
                             .iter()
