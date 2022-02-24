@@ -74,6 +74,33 @@ impl HelloWorld {
     }
 }
 
+async fn hello_world_dialer(
+    stream: Negotiated<yamux::Stream>,
+    name: &'static str,
+) -> Result<String> {
+    let mut stream = asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec);
+
+    stream.send(Bytes::from(name)).await?;
+    let bytes = stream.next().await.context("Expected message")??;
+    let message = String::from_utf8(bytes.to_vec())?;
+
+    Ok(message)
+}
+
+async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
+    let mut stream =
+        asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec).fuse();
+
+    let bytes = stream.select_next_some().await?;
+    let name = String::from_utf8(bytes.to_vec())?;
+
+    stream.send(Bytes::from(format!("Hello {name}!"))).await?;
+
+    Ok(())
+}
+
+// BOILERPLATE BELOW THIS LINE
+
 impl xtra::Actor for HelloWorld {}
 
 struct Listener {
@@ -373,29 +400,4 @@ struct NewInboundSubstream {
 
 impl xtra::Message for NewInboundSubstream {
     type Result = ();
-}
-
-async fn hello_world_dialer(
-    stream: Negotiated<yamux::Stream>,
-    name: &'static str,
-) -> Result<String> {
-    let mut stream = asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec);
-
-    stream.send(Bytes::from(name)).await?;
-    let bytes = stream.next().await.context("Expected message")??;
-    let message = String::from_utf8(bytes.to_vec())?;
-
-    Ok(message)
-}
-
-async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
-    let mut stream =
-        asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec).fuse();
-
-    let bytes = stream.select_next_some().await?;
-    let name = String::from_utf8(bytes.to_vec())?;
-
-    stream.send(Bytes::from(format!("Hello {name}!"))).await?;
-
-    Ok(())
 }
