@@ -21,14 +21,14 @@ async fn actor_system() {
     let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
     let mut tasks = Tasks::default();
 
-    let (address, future) = HelloWorld::default().create(None).run();
+    let (hello_world_handler, future) = HelloWorld::default().create(None).run();
     tasks.add(future);
 
     let (alice, alice_fut) = Listener::new(
         MemoryTransport::default(),
         alice_id.clone(),
         "/memory/10000".parse().unwrap(),
-        [("/hello-world/1.0.0", address.clone_channel())],
+        [("/hello-world/1.0.0", hello_world_handler.clone_channel())],
     )
     .create(None)
     .run();
