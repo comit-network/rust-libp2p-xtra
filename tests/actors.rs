@@ -108,7 +108,7 @@ impl xtra::Actor for HelloWorld {}
 
 struct Network {
     node: Node,
-    mode: Mode,
+    mode: Mode, // TODO: Remove in favor of connect and listen on messages + one for retrieving connection stats!
     tasks: Tasks,
     controls: HashMap<PeerId, Control>,
     inbound_substream_channels:
