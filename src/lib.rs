@@ -33,7 +33,7 @@ impl Node {
     pub fn new<T>(
         transport: T,
         identity: Keypair,
-        supported_protocols: Vec<&'static str>,
+        supported_inbound_protocols: Vec<&'static str>,
         upgrade_timeout: Duration,
     ) -> Result<Self>
     where
@@ -88,13 +88,12 @@ impl Node {
             .map(move |(peer, connection), _| {
                 let control = Control {
                     inner: connection.control(),
-                    supported_protocols: supported_protocols.clone(),
                 };
 
                 let incoming = yamux::into_stream(connection)
                     .err_into::<anyhow::Error>()
                     .and_then(move |stream| {
-                        let supported_protocols = supported_protocols.clone();
+                        let supported_protocols = supported_inbound_protocols.clone();
 
                         async move {
                             let (protocol, stream) = multistream_select::listener_select_proto(
@@ -148,21 +147,20 @@ impl Node {
 
 pub struct Control {
     inner: yamux::Control,
-    supported_protocols: Vec<&'static str>,
 }
 
 impl Control {
+    // TODO: This must have a timeout
     pub async fn open_substream(
         &mut self,
-        protocol: &'static str,
+        protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
     ) -> Result<Negotiated<yamux::Stream>> {
         let stream = self.inner.open_stream().await?;
 
         let (negotiated_protocol, stream) =
-            multistream_select::dialer_select_proto(stream, &self.supported_protocols, Version::V1)
-                .await?;
+            multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1).await?;
 
-        anyhow::ensure!(*negotiated_protocol == protocol);
+        anyhow::ensure!(negotiated_protocol == protocol);
 
         Ok(stream)
     }
