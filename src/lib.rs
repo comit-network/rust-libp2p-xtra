@@ -35,7 +35,7 @@ impl Node {
         identity: Keypair,
         supported_inbound_protocols: Vec<&'static str>,
         upgrade_timeout: Duration,
-    ) -> Result<Self>
+    ) -> Self
     where
         T: Transport + Clone + Send + Sync + 'static,
         T::Output: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -44,7 +44,9 @@ impl Node {
         T::Dial: Send + 'static,
         T::ListenerUpgrade: Send + 'static,
     {
-        let identity = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&identity)?;
+        let identity = noise::Keypair::<noise::X25519Spec>::new()
+            .into_authentic(&identity)
+            .expect("ed25519 signing does not fail");
 
         let stream = transport
             .and_then(|conn, endpoint| {
@@ -110,9 +112,9 @@ impl Node {
                 (peer, control, incoming)
             });
 
-        Ok(Self {
+        Self {
             inner: libp2p::transport::boxed::boxed(TransportTimeout::new(stream, upgrade_timeout)),
-        })
+        }
     }
 
     pub fn listen_on(

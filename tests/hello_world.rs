@@ -20,15 +20,13 @@ async fn hello_world() {
         alice.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
-    )
-    .unwrap();
+    );
     let bob = Node::new(
         MemoryTransport::default(),
         bob.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
-    )
-    .unwrap();
+    );
 
     let mut alice_inc = alice
         .listen_on("/memory/10000".parse().unwrap())

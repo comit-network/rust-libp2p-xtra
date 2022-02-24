@@ -134,8 +134,7 @@ impl Listener {
                     .map(|(proto, _)| *proto)
                     .collect(),
                 Duration::from_secs(20),
-            )
-            .unwrap(),
+            ),
             tasks: Default::default(),
             listen_address,
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
@@ -171,8 +170,7 @@ impl Dialer {
                     .map(|(proto, _)| *proto)
                     .collect(),
                 Duration::from_secs(20),
-            )
-            .unwrap(),
+            ),
             tasks: Default::default(),
             address,
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
