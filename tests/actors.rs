@@ -55,7 +55,7 @@ async fn actor_system() {
     .unwrap();
 
     let bob_to_alice = bob
-        .send(OpenSubstreamToPeer {
+        .send(OpenSubstream {
             peer: alice_id.public().to_peer_id(),
             protocol: "/hello-world/1.0.0",
         })
@@ -123,7 +123,7 @@ struct Node {
     listen_addresses: HashSet<Multiaddr>,
 }
 
-struct OpenSubstreamToPeer {
+struct OpenSubstream {
     pub peer: PeerId,
     pub protocol: &'static str,
 }
@@ -331,7 +331,7 @@ impl Node {
         );
     }
 
-    async fn handle(&mut self, msg: OpenSubstreamToPeer) -> Result<Negotiated<yamux::Stream>> {
+    async fn handle(&mut self, msg: OpenSubstream) -> Result<Negotiated<yamux::Stream>> {
         let peer = msg.peer;
         let protocol = msg.protocol;
 
