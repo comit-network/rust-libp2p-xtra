@@ -86,7 +86,7 @@ impl HelloWorld {
 }
 
 async fn hello_world_dialer(
-    stream: Negotiated<yamux::Stream>,
+    stream: Negotiated<libp2p_stream::Substream>,
     name: &'static str,
 ) -> Result<String> {
     let mut stream = asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec);
@@ -98,7 +98,7 @@ async fn hello_world_dialer(
     Ok(message)
 }
 
-async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
+async fn hello_world_listener(stream: Negotiated<libp2p_stream::Substream>) -> Result<()> {
     let mut stream =
         asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec).fuse();
 
@@ -331,7 +331,7 @@ impl Node {
         );
     }
 
-    async fn handle(&mut self, msg: OpenSubstream) -> Result<Negotiated<yamux::Stream>> {
+    async fn handle(&mut self, msg: OpenSubstream) -> Result<Negotiated<libp2p_stream::Substream>> {
         let peer = msg.peer;
         let protocol = msg.protocol;
 
@@ -366,12 +366,13 @@ struct ConnectionFailed {
 struct NewConnection {
     peer: PeerId,
     control: Control,
-    incoming_substreams: BoxStream<'static, Result<(Negotiated<yamux::Stream>, &'static str)>>,
+    incoming_substreams:
+        BoxStream<'static, Result<(Negotiated<libp2p_stream::Substream>, &'static str)>>,
 }
 
 struct NewInboundSubstream {
     peer: PeerId,
-    stream: Negotiated<yamux::Stream>,
+    stream: Negotiated<libp2p_stream::Substream>,
 }
 
 impl xtra::Message for NewInboundSubstream {
