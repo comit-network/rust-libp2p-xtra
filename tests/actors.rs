@@ -7,7 +7,7 @@ use libp2p_core::identity::Keypair;
 use libp2p_core::transport::MemoryTransport;
 use libp2p_core::{Multiaddr, Negotiated, PeerId, Transport};
 use libp2p_stream::multiaddress_ext::MultiaddrExt;
-use libp2p_stream::{Control, Node};
+use libp2p_stream::Control;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio_tasks::Tasks;
@@ -24,7 +24,7 @@ async fn actor_system() {
     let (hello_world_handler, future) = HelloWorld::default().create(None).run();
     tasks.add(future);
 
-    let (alice, alice_fut) = Network::new(
+    let (alice, alice_fut) = Node::new(
         MemoryTransport::default(),
         alice_id.clone(),
         [("/hello-world/1.0.0", hello_world_handler.clone_channel())],
@@ -40,7 +40,7 @@ async fn actor_system() {
         .await
         .unwrap();
 
-    let (bob, bob_fut) = Network::new(MemoryTransport::default(), bob_id, [])
+    let (bob, bob_fut) = Node::new(MemoryTransport::default(), bob_id, [])
         .create(None)
         .run();
     tasks.add(bob_fut);
@@ -114,8 +114,8 @@ async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
 
 impl xtra::Actor for HelloWorld {}
 
-struct Network {
-    node: Node,
+struct Node {
+    node: libp2p_stream::Node,
     tasks: Tasks,
     controls: HashMap<PeerId, Control>,
     inbound_substream_channels:
@@ -143,7 +143,7 @@ struct ConnectionStats {
     pub listen_addresses: HashSet<Multiaddr>,
 }
 
-impl Network {
+impl Node {
     fn new<T, const N: usize>(
         transport: T,
         identity: Keypair,
@@ -161,7 +161,7 @@ impl Network {
         T::ListenerUpgrade: Send + 'static,
     {
         Self {
-            node: Node::new(
+            node: libp2p_stream::Node::new(
                 transport,
                 identity,
                 inbound_substream_handlers
@@ -179,7 +179,7 @@ impl Network {
 }
 
 #[xtra_productivity]
-impl Network {
+impl Node {
     async fn handle(&mut self, msg: NewConnection, ctx: &mut Context<Self>) {
         let this = ctx.address().expect("we are alive");
 
@@ -346,7 +346,7 @@ impl Network {
     }
 }
 
-impl xtra::Actor for Network {}
+impl xtra::Actor for Node {}
 
 struct ListenerFailed {
     address: Multiaddr,

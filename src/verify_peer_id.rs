@@ -145,6 +145,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libp2p_core::transport::memory::Channel;
     use libp2p_core::transport::MemoryTransport;
     use libp2p_core::ConnectedPoint;
 
