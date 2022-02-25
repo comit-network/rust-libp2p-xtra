@@ -79,6 +79,8 @@ impl HelloWorld {
     }
 }
 
+impl xtra::Actor for HelloWorld {}
+
 async fn hello_world_dialer(
     stream: libp2p_stream::Substream,
     name: &'static str,
@@ -103,7 +105,3 @@ async fn hello_world_listener(stream: libp2p_stream::Substream) -> Result<()> {
 
     Ok(())
 }
-
-// BOILERPLATE BELOW THIS LINE
-
-impl xtra::Actor for HelloWorld {}
