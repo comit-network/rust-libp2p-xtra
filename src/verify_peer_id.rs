@@ -1,5 +1,4 @@
 use crate::multiaddress_ext::MultiaddrExt;
-use crate::Multiaddr;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::FutureExt;
@@ -7,7 +6,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use libp2p_core::transport::{ListenerEvent, TransportError};
-use libp2p_core::{PeerId, Transport};
+use libp2p_core::{Multiaddr, PeerId, Transport};
 use std::fmt;
 use std::fmt::Debug;
 
