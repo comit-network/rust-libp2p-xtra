@@ -1,5 +1,5 @@
-use anyhow::Context as _;
 use anyhow::Result;
+use anyhow::{bail, Context as _};
 use asynchronous_codec::Bytes;
 use futures::stream::BoxStream;
 use futures::{AsyncRead, AsyncWrite, SinkExt, StreamExt, TryStreamExt};
@@ -205,10 +205,19 @@ impl Node {
 
                 async move {
                     loop {
-                        let (stream, protocol) = incoming_substreams
-                            .try_next()
-                            .await? // TODO: This fails if we can't negotiate a protocol, must not abort the loop!!
-                            .context("Substream listener closed")?;
+                        let (stream, protocol) = match incoming_substreams.try_next().await {
+                            Ok(Some((stream, protocol))) => (stream, protocol),
+                            Ok(None) => bail!("Substream listener closed"),
+                            Err(libp2p_stream::Error::NegotiationTimeoutReached) => {
+                                eprintln!("Hit timeout while negotiating substream");
+                                continue;
+                            }
+                            Err(libp2p_stream::Error::NegotiationFailed(e)) => {
+                                eprintln!("Failed to negotiate substream: {}", e);
+                                continue;
+                            }
+                            Err(e) => bail!(e),
+                        };
 
                         let channel = inbound_substream_channels
                             .get(&protocol)
