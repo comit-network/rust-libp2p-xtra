@@ -16,6 +16,11 @@ use xtra::message_channel::StrongMessageChannel;
 use xtra::Context;
 use xtra_productivity::xtra_productivity;
 
+// TODO:
+// 1. Group tasks by connection so we can drop them
+// 2. Provide a disconnect API
+// 3. Write tests for `GetConnectionStats`
+// 4. Think about load testing
 pub struct Node {
     node: libp2p_stream::Node,
     tasks: Tasks,
