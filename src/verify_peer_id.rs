@@ -1,3 +1,4 @@
+use crate::multiaddress_ext::MultiaddrExt;
 use crate::Multiaddr;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -5,7 +6,6 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
-use libp2p_core::multiaddr::Protocol;
 use libp2p_core::transport::{ListenerEvent, TransportError};
 use libp2p_core::{PeerId, Transport};
 use std::fmt;
@@ -60,8 +60,10 @@ where
     where
         Self: Sized,
     {
-        let expected_peer_id =
-            extract_peer_id(addr.clone()).ok_or(TransportError::Other(Error::NoPeerId))?;
+        let expected_peer_id = addr
+            .clone()
+            .extract_peer_id()
+            .ok_or(TransportError::Other(Error::NoPeerId))?;
 
         let dial = self.inner.dial(addr).map_err(|e| e.map(Error::Inner))?;
 
@@ -72,8 +74,10 @@ where
     where
         Self: Sized,
     {
-        let expected_peer_id =
-            extract_peer_id(addr.clone()).ok_or(TransportError::Other(Error::NoPeerId))?;
+        let expected_peer_id = addr
+            .clone()
+            .extract_peer_id()
+            .ok_or(TransportError::Other(Error::NoPeerId))?;
         let dial = self
             .inner
             .dial_as_listener(addr)
@@ -136,15 +140,6 @@ where
             Error::Inner(inner) => Some(inner),
         }
     }
-}
-
-fn extract_peer_id(mut addr: Multiaddr) -> Option<PeerId> {
-    let peer_id = match addr.pop()? {
-        Protocol::P2p(hash) => PeerId::from_multihash(hash).ok()?,
-        _ => return None,
-    };
-
-    Some(peer_id)
 }
 
 #[cfg(test)]

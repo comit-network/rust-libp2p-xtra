@@ -6,8 +6,9 @@ use futures::{AsyncRead, AsyncWrite, SinkExt, StreamExt, TryStreamExt};
 use libp2p_core::identity::Keypair;
 use libp2p_core::transport::MemoryTransport;
 use libp2p_core::{Multiaddr, Negotiated, PeerId, Transport};
+use libp2p_stream::multiaddress_ext::MultiaddrExt;
 use libp2p_stream::{Control, Node};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio_tasks::Tasks;
 use xtra::message_channel::StrongMessageChannel;
@@ -50,6 +51,7 @@ async fn actor_system() {
             .unwrap(),
     })
     .await
+    .unwrap()
     .unwrap();
 
     let bob_to_alice = bob
@@ -118,6 +120,7 @@ struct Network {
     controls: HashMap<PeerId, Control>,
     inbound_substream_channels:
         HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
+    listen_addresses: HashSet<Multiaddr>,
 }
 
 struct OpenSubstreamToPeer {
@@ -134,6 +137,11 @@ struct ListenOn {
 }
 
 struct GetConnectionStats;
+
+struct ConnectionStats {
+    pub connected_peers: HashSet<PeerId>,
+    pub listen_addresses: HashSet<Multiaddr>,
+}
 
 impl Network {
     fn new<T, const N: usize>(
@@ -165,6 +173,7 @@ impl Network {
             tasks: Tasks::default(),
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
             controls: HashMap::default(),
+            listen_addresses: HashSet::default(),
         }
     }
 }
@@ -209,84 +218,95 @@ impl Network {
                 }
             },
             move |error| async move {
-                let _ = this.send(ListenerFailed { error }).await;
+                let _ = this.send(ConnectionFailed { peer, error }).await;
             },
         );
         self.controls.insert(peer, control);
     }
 
     async fn handle(&mut self, msg: ListenerFailed) {
-        eprintln!("ListenerFailed: {:#}", msg.error)
+        eprintln!("Listener failed: {:#}", msg.error);
+
+        self.listen_addresses.remove(&msg.address);
+    }
+
+    async fn handle(&mut self, msg: FailedToConnect) {
+        eprintln!("Failed to connect: {:#}", msg.error);
+
+        let control = match self.controls.remove(&msg.peer) {
+            None => return,
+            Some(control) => control,
+        };
+
+        self.tasks.add(control.close());
     }
 
     async fn handle(&mut self, msg: ConnectionFailed) {
-        eprintln!("ConnectionFailed: {:#}", msg.error)
-    }
+        eprintln!("Connection failed: {:#}", msg.error);
 
-    async fn handle(&mut self, msg: Connect, ctx: &mut Context<Self>) {
-        let this = ctx.address().expect("we are alive");
-
-        let (peer, control, mut incoming_substreams) = match self.node.connect(msg.address).await {
-            Ok(connection) => connection,
-            Err(error) => {
-                let _ = this.do_send_async(ConnectionFailed { error }).await;
-
-                return;
-            }
+        let control = match self.controls.remove(&msg.peer) {
+            None => return,
+            Some(control) => control,
         };
 
-        self.controls.insert(peer, control);
+        self.tasks.add(control.close());
+    }
+
+    async fn handle(&mut self, _: GetConnectionStats) -> ConnectionStats {
+        ConnectionStats {
+            connected_peers: self.controls.keys().copied().collect(),
+            listen_addresses: self.listen_addresses.clone(),
+        }
+    }
+
+    async fn handle(&mut self, msg: Connect, ctx: &mut Context<Self>) -> Result<()> {
+        let this = ctx.address().expect("we are alive");
+        let peer = msg
+            .address
+            .clone()
+            .extract_peer_id()
+            .context("Failed to extract PeerId from address")?;
+
         self.tasks.add_fallible(
             {
-                let inbound_substream_channels = self
-                    .inbound_substream_channels
-                    .iter()
-                    .map(|(proto, channel)| {
-                        (
-                            proto.to_owned(),
-                            StrongMessageChannel::clone_channel(channel.as_ref()),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
+                let node = self.node.clone();
+                let this = this.clone();
 
                 async move {
-                    loop {
-                        let (stream, protocol) = incoming_substreams
-                            .try_next()
-                            .await?
-                            .context("Substream listener closed")?;
+                    let (peer, control, incoming_substreams) = node.connect(msg.address).await?;
 
-                        let channel = inbound_substream_channels
-                            .get(&protocol)
-                            .expect("Cannot negotiate a protocol that we don't support");
+                    let _ = this
+                        .send(NewConnection {
+                            peer,
+                            control,
+                            incoming_substreams,
+                        })
+                        .await;
 
-                        let _ = channel.send(NewInboundSubstream { peer, stream }).await;
-                    }
+                    anyhow::Ok(())
                 }
             },
             move |error| async move {
-                let _ = this.send(ConnectionFailed { error }).await;
+                let _ = this.send(FailedToConnect { peer, error }).await;
             },
         );
+
+        Ok(())
     }
 
     async fn handle(&mut self, msg: ListenOn, ctx: &mut Context<Self>) {
         let this = ctx.address().expect("we are alive");
+        let listen_address = msg.address.clone();
 
-        let mut stream = match self.node.listen_on(msg.address) {
-            Ok(stream) => stream,
-            Err(error) => {
-                let _ = this.do_send_async(ListenerFailed { error }).await;
-
-                return;
-            }
-        };
-
+        self.listen_addresses.insert(listen_address.clone()); // FIXME: This address could be a "catch-all" like "0.0.0.0" which actually results in listening on multiple interfaces.
         self.tasks.add_fallible(
             {
+                let node = self.node.clone();
                 let this = this.clone();
 
                 async move {
+                    let mut stream = node.listen_on(msg.address)?;
+
                     loop {
                         let (peer, control, incoming_substreams) =
                             stream.try_next().await?.context("Listener closed")?;
@@ -301,7 +321,12 @@ impl Network {
                 }
             },
             |error| async move {
-                let _ = this.send(ListenerFailed { error }).await;
+                let _ = this
+                    .send(ListenerFailed {
+                        address: listen_address,
+                        error,
+                    })
+                    .await;
             },
         );
     }
@@ -324,10 +349,17 @@ impl Network {
 impl xtra::Actor for Network {}
 
 struct ListenerFailed {
+    address: Multiaddr,
+    error: anyhow::Error,
+}
+
+struct FailedToConnect {
+    peer: PeerId,
     error: anyhow::Error,
 }
 
 struct ConnectionFailed {
+    peer: PeerId,
     error: anyhow::Error,
 }
 

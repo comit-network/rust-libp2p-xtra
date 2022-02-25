@@ -1,3 +1,4 @@
+pub mod multiaddress_ext;
 mod verify_peer_id;
 
 pub use libp2p_core as libp2p;
@@ -173,5 +174,9 @@ impl Control {
         anyhow::ensure!(negotiated_protocol == protocol);
 
         Ok(stream)
+    }
+
+    pub async fn close(mut self) {
+        let _ = self.inner.close().await;
     }
 }
