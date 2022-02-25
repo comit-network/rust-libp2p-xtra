@@ -1,0 +1,21 @@
+[package]
+name = "libp2p-stream-xtra"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+xtra_productivity = { git = "https://github.com/comit-network/xtra-productivity" }
+tokio-tasks = { git = "https://github.com/itchysats/itchysats" }
+xtra = "0.5"
+async-trait = "0.1"
+libp2p-stream = { path = ".." }
+tracing = "0.1"
+anyhow = "1"
+futures = "0.3"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+asynchronous-codec = "0.6"

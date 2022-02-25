@@ -10,7 +10,7 @@ use xtra::Actor;
 use xtra_productivity::xtra_productivity;
 
 #[tokio::test]
-async fn actor_system() {
+async fn hello_world() {
     let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
     let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
     let mut tasks = Tasks::default();

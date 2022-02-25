@@ -485,17 +485,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "displaydoc"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf95dc3f046b9da4f2d51833c0d3547d8564ef6910f5c1ed130306a75b92886"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "ecdsa"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1098,7 +1087,6 @@ dependencies = [
  "anyhow",
  "asynchronous-codec",
  "console-subscriber",
- "displaydoc",
  "futures",
  "libp2p-core",
  "libp2p-noise",
@@ -1119,6 +1107,7 @@ dependencies = [
  "asynchronous-codec",
  "futures",
  "libp2p-stream",
+ "thiserror",
  "tokio",
  "tokio-tasks",
  "tracing",

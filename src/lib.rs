@@ -7,7 +7,6 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use displaydoc::Display;
 use futures::stream::BoxStream;
 use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
 use libp2p_core::transport::timeout::TransportTimeout;
@@ -197,12 +196,12 @@ impl Control {
     }
 }
 
-#[derive(Display, Debug, Error)]
+#[derive(Debug, Error)]
 pub enum Error {
-    /// Timeout in protocol negotiation
+    #[error("Timeout in protocol negotiation")]
     NegotiationTimeoutReached,
-    /// Multiplexer error
+    #[error("Multiplexer error")]
     Multiplexer(#[from] yamux::ConnectionError),
-    /// Failed to negotiate protcol
+    #[error("Failed to negotiate protcol")]
     NegotiationFailed(#[from] NegotiationError),
 }
