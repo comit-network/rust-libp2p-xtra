@@ -21,9 +21,7 @@ displaydoc = "0.2"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 asynchronous-codec = "0.6"
-env_logger = "0.9"
-xtra = "0.5"
-async-trait = "0.1"
-xtra_productivity = { git = "https://github.com/comit-network/xtra-productivity" }
-tokio-tasks = { git = "https://github.com/itchysats/itchysats" }
 libp2p-plaintext = "0.32"
+
+[workspace]
+members = ["./libp2p-stream-xtra"]

@@ -26,12 +26,12 @@ use crate::libp2p::PeerId;
 use crate::libp2p::Transport;
 use crate::verify_peer_id::VerifyPeerId;
 
-pub type Substream = yamux::Stream;
+pub type Substream = Negotiated<yamux::Stream>;
 
 pub type Connection = (
     PeerId,
     Control,
-    BoxStream<'static, Result<(Negotiated<Substream>, &'static str), Error>>,
+    BoxStream<'static, Result<(Substream, &'static str), Error>>,
 );
 
 #[derive(Clone)]

@@ -9,8 +9,6 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn hello_world() {
-    env_logger::init();
-
     let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
     let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
 
