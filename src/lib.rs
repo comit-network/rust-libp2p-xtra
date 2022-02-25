@@ -2,10 +2,12 @@ pub mod multiaddress_ext;
 mod verify_peer_id;
 
 pub use libp2p_core as libp2p;
+
 use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
+use displaydoc::Display;
 use futures::stream::BoxStream;
 use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
 use libp2p_core::transport::timeout::TransportTimeout;
@@ -13,6 +15,8 @@ use libp2p_core::transport::{Boxed, ListenerEvent};
 use libp2p_core::upgrade::Version;
 use libp2p_core::{upgrade, Endpoint, Negotiated};
 use libp2p_noise as noise;
+use multistream_select::NegotiationError;
+use thiserror::Error;
 use void::Void;
 use yamux::Mode;
 
@@ -27,7 +31,7 @@ pub type Substream = yamux::Stream;
 pub type Connection = (
     PeerId,
     Control,
-    BoxStream<'static, Result<(Negotiated<Substream>, &'static str)>>,
+    BoxStream<'static, Result<(Negotiated<Substream>, &'static str), Error>>,
 );
 
 #[derive(Clone)]
@@ -104,7 +108,7 @@ impl Node {
             };
 
             let incoming = yamux::into_stream(connection)
-                .err_into::<anyhow::Error>()
+                .err_into::<Error>()
                 .and_then(move |stream| {
                     let supported_protocols = supported_inbound_protocols.clone();
 
@@ -113,9 +117,10 @@ impl Node {
                             negotiation_timeout,
                             multistream_select::listener_select_proto(stream, &supported_protocols),
                         )
-                        .await??;
+                        .await
+                        .map_err(|_| Error::NegotiationTimeoutReached)??;
 
-                        anyhow::Ok((stream, *protocol)) // TODO: Do not return anyhow here so we can track protocol negotiation failures separately!
+                        Result::<_, Error>::Ok((stream, *protocol)) // TODO: Do not return anyhow here so we can track protocol negotiation failures separately!
                     }
                 })
                 .boxed();
@@ -169,7 +174,7 @@ impl Control {
     pub async fn open_substream(
         &mut self,
         protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
-    ) -> Result<Negotiated<yamux::Stream>> {
+    ) -> Result<Negotiated<yamux::Stream>, Error> {
         // TODO: Return a proper error enum here!
 
         let stream = tokio::time::timeout(self.negotiation_timeout, async {
@@ -179,14 +184,25 @@ impl Control {
                 multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
                     .await?;
 
-            anyhow::Ok(stream)
+            Result::<_, Error>::Ok(stream)
         })
-        .await??;
+        .await
+        .map_err(|_| Error::NegotiationTimeoutReached)??;
 
         Ok(stream)
     }
 
-    pub async fn close(mut self) {
+    pub async fn close_connection(mut self) {
         let _ = self.inner.close().await;
     }
+}
+
+#[derive(Display, Debug, Error)]
+pub enum Error {
+    /// Timeout in protocol negotiation
+    NegotiationTimeoutReached,
+    /// Multiplexer error
+    Multiplexer(#[from] yamux::ConnectionError),
+    /// Failed to negotiate protcol
+    NegotiationFailed(#[from] NegotiationError),
 }

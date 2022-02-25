@@ -86,7 +86,8 @@ async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
 }
 
 async fn substream_handler(
-    mut new_substreams: impl Stream<Item = Result<(Negotiated<yamux::Stream>, &'static str)>> + Unpin,
+    mut new_substreams: impl Stream<Item = Result<(Negotiated<yamux::Stream>, &'static str), libp2p_stream::Error>>
+        + Unpin,
 ) {
     loop {
         let (stream, protocol) = new_substreams.next().await.unwrap().unwrap();

@@ -239,7 +239,7 @@ impl Node {
             Some(control) => control,
         };
 
-        self.tasks.add(control.close());
+        self.tasks.add(control.close_connection());
     }
 
     async fn handle(&mut self, msg: ConnectionFailed) {
@@ -250,7 +250,7 @@ impl Node {
             Some(control) => control,
         };
 
-        self.tasks.add(control.close());
+        self.tasks.add(control.close_connection());
     }
 
     async fn handle(&mut self, _: GetConnectionStats) -> ConnectionStats {
@@ -367,8 +367,10 @@ struct ConnectionFailed {
 struct NewConnection {
     peer: PeerId,
     control: Control,
-    incoming_substreams:
-        BoxStream<'static, Result<(Negotiated<libp2p_stream::Substream>, &'static str)>>,
+    incoming_substreams: BoxStream<
+        'static,
+        Result<(Negotiated<libp2p_stream::Substream>, &'static str), libp2p_stream::Error>,
+    >,
 }
 
 struct NewInboundSubstream {
