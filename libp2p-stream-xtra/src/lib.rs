@@ -21,6 +21,9 @@ use xtra_productivity::xtra_productivity;
 // 2. Provide a disconnect API
 // 3. Write tests for `GetConnectionStats`
 // 4. Think about load testing
+// 5. Make timeouts configurable
+// 6. Audit for deadlocks (always use async sending in message channels?)
+// 7. Clean up inbound substream channels if disconnected? => No because it might be supervised and get reconnected again.
 pub struct Node {
     node: libp2p_stream::Node,
     tasks: Tasks,
