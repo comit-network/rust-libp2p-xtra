@@ -41,6 +41,7 @@ impl Node {
         identity: Keypair,
         supported_inbound_protocols: Vec<&'static str>,
         upgrade_timeout: Duration,
+        negotiation_timeout: Duration,
     ) -> Self
     where
         T: Transport + Clone + Send + Sync + 'static,
@@ -99,6 +100,7 @@ impl Node {
         let protocols_negotiated = multiplexed.map(move |(peer, connection), _| {
             let control = Control {
                 inner: connection.control(),
+                negotiation_timeout,
             };
 
             let incoming = yamux::into_stream(connection)
@@ -107,9 +109,11 @@ impl Node {
                     let supported_protocols = supported_inbound_protocols.clone();
 
                     async move {
-                        let (protocol, stream) =
-                            multistream_select::listener_select_proto(stream, &supported_protocols)
-                                .await?;
+                        let (protocol, stream) = tokio::time::timeout(
+                            negotiation_timeout,
+                            multistream_select::listener_select_proto(stream, &supported_protocols),
+                        )
+                        .await??;
 
                         anyhow::Ok((stream, *protocol)) // TODO: Do not return anyhow here so we can track protocol negotiation failures separately!
                     }
@@ -158,22 +162,26 @@ impl Node {
 
 pub struct Control {
     inner: yamux::Control,
+    negotiation_timeout: Duration,
 }
 
 impl Control {
-    // TODO: This must have a timeout
     pub async fn open_substream(
         &mut self,
         protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
     ) -> Result<Negotiated<yamux::Stream>> {
         // TODO: Return a proper error enum here!
 
-        let stream = self.inner.open_stream().await?;
+        let stream = tokio::time::timeout(self.negotiation_timeout, async {
+            let stream = self.inner.open_stream().await?;
 
-        let (negotiated_protocol, stream) =
-            multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1).await?;
+            let (_, stream) =
+                multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
+                    .await?;
 
-        anyhow::ensure!(negotiated_protocol == protocol);
+            anyhow::Ok(stream)
+        })
+        .await??;
 
         Ok(stream)
     }

@@ -9,7 +9,6 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn hello_world() {
-    // console_subscriber::init();
     env_logger::init();
 
     let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
@@ -20,12 +19,14 @@ async fn hello_world() {
         alice_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
+        Duration::from_secs(10),
     );
     let bob = Node::new(
         MemoryTransport::default(),
         bob_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
+        Duration::from_secs(10),
     );
 
     let mut alice_inc = alice

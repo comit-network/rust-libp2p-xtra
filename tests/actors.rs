@@ -169,6 +169,7 @@ impl Node {
                     .map(|(proto, _)| *proto)
                     .collect(),
                 Duration::from_secs(20),
+                Duration::from_secs(20),
             ),
             tasks: Tasks::default(),
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
