@@ -2,6 +2,7 @@ use anyhow::Context as _;
 use anyhow::Result;
 use asynchronous_codec::Bytes;
 use futures::{SinkExt, StreamExt};
+use libp2p_stream::libp2p::identity::Keypair;
 use libp2p_stream::libp2p::transport::MemoryTransport;
 use libp2p_stream_xtra::{Connect, ListenOn, NewInboundSubstream, Node, OpenSubstream};
 use tokio_tasks::Tasks;
@@ -11,8 +12,8 @@ use xtra_productivity::xtra_productivity;
 
 #[tokio::test]
 async fn hello_world() {
-    let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
-    let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
+    let alice_id = Keypair::generate_ed25519();
+    let bob_id = Keypair::generate_ed25519();
     let mut tasks = Tasks::default();
 
     let (hello_world_handler, future) = HelloWorld::default().create(None).run();
