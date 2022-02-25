@@ -6,7 +6,6 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::TryStreamExt;
 use libp2p_core::multiaddr::Protocol;
-use libp2p_core::transport::memory::Channel;
 use libp2p_core::transport::{ListenerEvent, TransportError};
 use libp2p_core::{PeerId, Transport};
 use std::fmt;
