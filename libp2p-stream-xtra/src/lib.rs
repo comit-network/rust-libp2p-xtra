@@ -27,7 +27,7 @@ use xtra_productivity::xtra_productivity;
 pub struct Node {
     node: libp2p_stream::Node,
     tasks: Tasks,
-    controls: HashMap<PeerId, Control>,
+    controls: HashMap<PeerId, (Control, Tasks)>,
     inbound_substream_channels:
         HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
     listen_addresses: HashSet<Multiaddr>,
@@ -100,6 +100,19 @@ impl Node {
             listen_addresses: HashSet::default(),
         }
     }
+
+    fn drop_connection(&mut self, peer: &PeerId) {
+        let (control, tasks) = match self.controls.remove(&peer) {
+            None => return,
+            Some(control) => control,
+        };
+
+        // TODO: Evaluate whether dropping and closing has to be in a particular order.
+        self.tasks.add(async move {
+            control.close_connection().await;
+            drop(tasks);
+        });
+    }
 }
 
 #[xtra_productivity]
@@ -113,7 +126,8 @@ impl Node {
             mut incoming_substreams,
         } = msg;
 
-        self.tasks.add_fallible(
+        let mut tasks = Tasks::default();
+        tasks.add_fallible(
             {
                 let inbound_substream_channels = self
                     .inbound_substream_channels
@@ -154,7 +168,7 @@ impl Node {
                 let _ = this.send(ConnectionFailed { peer, error }).await;
             },
         );
-        self.controls.insert(peer, control);
+        self.controls.insert(peer, (control, tasks));
     }
 
     async fn handle(&mut self, msg: ListenerFailed) {
@@ -165,24 +179,16 @@ impl Node {
 
     async fn handle(&mut self, msg: FailedToConnect) {
         tracing::debug!("Failed to connect: {:#}", msg.error);
+        let peer = msg.peer;
 
-        let control = match self.controls.remove(&msg.peer) {
-            None => return,
-            Some(control) => control,
-        };
-
-        self.tasks.add(control.close_connection());
+        self.drop_connection(&peer);
     }
 
     async fn handle(&mut self, msg: ConnectionFailed) {
         tracing::debug!("Connection failed: {:#}", msg.error);
+        let peer = msg.peer;
 
-        let control = match self.controls.remove(&msg.peer) {
-            None => return,
-            Some(control) => control,
-        };
-
-        self.tasks.add(control.close_connection());
+        self.drop_connection(&peer);
     }
 
     async fn handle(&mut self, _: GetConnectionStats) -> ConnectionStats {
@@ -269,12 +275,12 @@ impl Node {
         let peer = msg.peer;
         let protocol = msg.protocol;
 
-        let stream = self
+        let (control, _) = self
             .controls
             .get_mut(&peer)
-            .ok_or_else(|| Error::NoConnection(peer))?
-            .open_substream(protocol)
-            .await?;
+            .ok_or_else(|| Error::NoConnection(peer))?;
+
+        let stream = control.open_substream(protocol).await?;
 
         Ok(stream)
     }
