@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 xtra_productivity = { git = "https://github.com/comit-network/xtra-productivity" }
 tokio-tasks = { git = "https://github.com/itchysats/itchysats" }
-xtra = "0.5"
+xtra = { version = "0.5", features = ["with-tokio-1"] }
 async-trait = "0.1"
 libp2p-stream = { path = ".." }
 tracing = "0.1"

@@ -7,6 +7,7 @@ use libp2p_stream::libp2p::transport::MemoryTransport;
 use libp2p_stream_xtra::{Connect, ListenOn, NewInboundSubstream, Node, OpenSubstream};
 use tokio_tasks::Tasks;
 use xtra::message_channel::StrongMessageChannel;
+use xtra::spawn::TokioGlobalSpawnExt;
 use xtra::Actor;
 use xtra_productivity::xtra_productivity;
 
@@ -14,19 +15,16 @@ use xtra_productivity::xtra_productivity;
 async fn hello_world() {
     let alice_id = Keypair::generate_ed25519();
     let bob_id = Keypair::generate_ed25519();
-    let mut tasks = Tasks::default();
 
-    let (hello_world_handler, future) = HelloWorld::default().create(None).run();
-    tasks.add(future);
+    let hello_world_handler = HelloWorld::default().create(None).spawn_global();
 
-    let (alice, alice_fut) = Node::new(
+    let alice = Node::new(
         MemoryTransport::default(),
         alice_id.clone(),
         [("/hello-world/1.0.0", hello_world_handler.clone_channel())],
     )
     .create(None)
-    .run();
-    tasks.add(alice_fut);
+    .spawn_global();
 
     alice
         .send(ListenOn {
@@ -35,10 +33,9 @@ async fn hello_world() {
         .await
         .unwrap();
 
-    let (bob, bob_fut) = Node::new(MemoryTransport::default(), bob_id, [])
+    let bob = Node::new(MemoryTransport::default(), bob_id, [])
         .create(None)
-        .run();
-    tasks.add(bob_fut);
+        .spawn_global();
 
     bob.send(Connect {
         address: format!("/memory/10000/p2p/{}", alice_id.public().to_peer_id())
