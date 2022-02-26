@@ -4,51 +4,32 @@ use asynchronous_codec::Bytes;
 use futures::{SinkExt, StreamExt};
 use libp2p_stream::libp2p::identity::Keypair;
 use libp2p_stream::libp2p::transport::MemoryTransport;
-use libp2p_stream_xtra::{Connect, ListenOn, NewInboundSubstream, Node, OpenSubstream};
+use libp2p_stream::libp2p::PeerId;
+use libp2p_stream_xtra::{
+    Connect, Disconnect, GetConnectionStats, ListenOn, NewInboundSubstream, Node, OpenSubstream,
+};
+use std::collections::HashSet;
 use tokio_tasks::Tasks;
 use xtra::message_channel::StrongMessageChannel;
 use xtra::spawn::TokioGlobalSpawnExt;
-use xtra::Actor;
+use xtra::{Actor, Address};
 use xtra_productivity::xtra_productivity;
 
 #[tokio::test]
 async fn hello_world() {
-    let alice_id = Keypair::generate_ed25519();
-    let bob_id = Keypair::generate_ed25519();
-
-    let hello_world_handler = HelloWorld::default().create(None).spawn_global();
-
-    let alice = Node::new(
-        MemoryTransport::default(),
-        alice_id.clone(),
-        [("/hello-world/1.0.0", hello_world_handler.clone_channel())],
+    let alice_hello_world_handler = HelloWorld::default().create(None).spawn_global();
+    let (alice_peer_id, _, _alice, bob) = alice_and_bob(
+        [(
+            "/hello-world/1.0.0",
+            alice_hello_world_handler.clone_channel(),
+        )],
+        [],
     )
-    .create(None)
-    .spawn_global();
-
-    alice
-        .send(ListenOn {
-            address: "/memory/10000".parse().unwrap(),
-        })
-        .await
-        .unwrap();
-
-    let bob = Node::new(MemoryTransport::default(), bob_id, [])
-        .create(None)
-        .spawn_global();
-
-    bob.send(Connect {
-        address: format!("/memory/10000/p2p/{}", alice_id.public().to_peer_id())
-            .parse()
-            .unwrap(),
-    })
-    .await
-    .unwrap()
-    .unwrap();
+    .await;
 
     let bob_to_alice = bob
         .send(OpenSubstream {
-            peer: alice_id.public().to_peer_id(),
+            peer: alice_peer_id,
             protocol: "/hello-world/1.0.0",
         })
         .await
@@ -57,7 +38,103 @@ async fn hello_world() {
 
     let string = hello_world_dialer(bob_to_alice, "Bob").await.unwrap();
 
-    assert_eq!(string, "Hello Bob!")
+    assert_eq!(string, "Hello Bob!");
+}
+
+#[tokio::test]
+async fn after_connect_see_each_other_as_connected() {
+    let (alice_peer_id, bob_peer_id, alice, bob) = alice_and_bob([], []).await;
+
+    let alice_stats = alice.send(GetConnectionStats).await.unwrap();
+    let bob_stats = bob.send(GetConnectionStats).await.unwrap();
+
+    assert_eq!(alice_stats.connected_peers, HashSet::from([bob_peer_id]));
+    assert_eq!(bob_stats.connected_peers, HashSet::from([alice_peer_id]));
+}
+
+#[tokio::test]
+async fn disconnect_is_reflected_in_stats() {
+    let (_, bob_peer_id, alice, bob) = alice_and_bob([], []).await;
+
+    alice.send(Disconnect(bob_peer_id)).await.unwrap();
+
+    let alice_stats = alice.send(GetConnectionStats).await.unwrap();
+    let bob_stats = bob.send(GetConnectionStats).await.unwrap();
+
+    assert_eq!(alice_stats.connected_peers, HashSet::from([]));
+    assert_eq!(bob_stats.connected_peers, HashSet::from([]));
+}
+
+#[tokio::test]
+async fn cannot_open_substream_for_unhandled_protocol() {
+    let (_, bob_peer_id, alice, _bob) = alice_and_bob([], []).await;
+
+    let error = alice
+        .send(OpenSubstream {
+            peer: bob_peer_id,
+            protocol: "/foo/bar/1.0.0",
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+
+    dbg!(&error);
+
+    assert!(matches!(
+        error,
+        libp2p_stream_xtra::Error::FailedToOpen(libp2p_stream::Error::NegotiationFailed(
+            libp2p_stream::NegotiationError::Failed
+        ))
+    ))
+}
+
+async fn alice_and_bob<const AN: usize, const BN: usize>(
+    alice_inbound_substream_handlers: [(
+        &'static str,
+        Box<dyn StrongMessageChannel<NewInboundSubstream>>,
+    ); AN],
+    bob_inbound_substream_handlers: [(
+        &'static str,
+        Box<dyn StrongMessageChannel<NewInboundSubstream>>,
+    ); BN],
+) -> (PeerId, PeerId, Address<Node>, Address<Node>) {
+    let port = rand::random::<u16>();
+
+    let alice_id = Keypair::generate_ed25519();
+    let alice_peer_id = alice_id.public().to_peer_id();
+    let bob_id = Keypair::generate_ed25519();
+    let bob_peer_id = bob_id.public().to_peer_id();
+
+    let alice = Node::new(
+        MemoryTransport::default(),
+        alice_id.clone(),
+        alice_inbound_substream_handlers,
+    )
+    .create(None)
+    .spawn_global();
+    let bob = Node::new(
+        MemoryTransport::default(),
+        bob_id.clone(),
+        bob_inbound_substream_handlers,
+    )
+    .create(None)
+    .spawn_global();
+
+    alice
+        .send(ListenOn(format!("/memory/{port}").parse().unwrap()))
+        .await
+        .unwrap();
+
+    bob.send(Connect(
+        format!("/memory/{port}/p2p/{alice_peer_id}")
+            .parse()
+            .unwrap(),
+    ))
+    .await
+    .unwrap()
+    .unwrap();
+
+    (alice_peer_id, bob_peer_id, alice, bob)
 }
 
 #[derive(Default)]

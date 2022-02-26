@@ -38,13 +38,11 @@ pub struct OpenSubstream {
     pub protocol: &'static str,
 }
 
-pub struct Connect {
-    pub address: Multiaddr,
-}
+pub struct Connect(pub Multiaddr);
 
-pub struct ListenOn {
-    pub address: Multiaddr,
-}
+pub struct Disconnect(pub PeerId);
+
+pub struct ListenOn(pub Multiaddr);
 
 pub struct GetConnectionStats;
 
@@ -202,7 +200,7 @@ impl Node {
         let this = ctx.address().expect("we are alive");
 
         let peer = msg
-            .address
+            .0
             .clone()
             .extract_peer_id()
             .context("Failed to extract PeerId from address")?;
@@ -213,7 +211,7 @@ impl Node {
                 let this = this.clone();
 
                 async move {
-                    let (peer, control, incoming_substreams) = node.connect(msg.address).await?;
+                    let (peer, control, incoming_substreams) = node.connect(msg.0).await?;
 
                     let _ = this
                         .send(NewConnection {
@@ -234,9 +232,13 @@ impl Node {
         Ok(())
     }
 
+    async fn handle(&mut self, msg: Disconnect) {
+        self.drop_connection(&msg.0);
+    }
+
     async fn handle(&mut self, msg: ListenOn, ctx: &mut Context<Self>) {
         let this = ctx.address().expect("we are alive");
-        let listen_address = msg.address.clone();
+        let listen_address = msg.0.clone();
 
         self.listen_addresses.insert(listen_address.clone()); // FIXME: This address could be a "catch-all" like "0.0.0.0" which actually results in listening on multiple interfaces.
         self.tasks.add_fallible(
@@ -245,7 +247,7 @@ impl Node {
                 let this = this.clone();
 
                 async move {
-                    let mut stream = node.listen_on(msg.address)?;
+                    let mut stream = node.listen_on(msg.0)?;
 
                     loop {
                         let (peer, control, incoming_substreams) =

@@ -1107,6 +1107,7 @@ dependencies = [
  "asynchronous-codec",
  "futures",
  "libp2p-stream",
+ "rand 0.8.4",
  "thiserror",
  "tokio",
  "tokio-tasks",

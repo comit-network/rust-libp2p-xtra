@@ -2,6 +2,7 @@ pub mod multiaddress_ext;
 mod verify_peer_id;
 
 pub use libp2p_core as libp2p;
+pub use multistream_select::NegotiationError;
 
 use std::io;
 use std::time::Duration;
@@ -14,7 +15,6 @@ use libp2p_core::transport::{Boxed, ListenerEvent};
 use libp2p_core::upgrade::Version;
 use libp2p_core::{upgrade, Endpoint, Negotiated};
 use libp2p_noise as noise;
-use multistream_select::NegotiationError;
 use thiserror::Error;
 use void::Void;
 use yamux::Mode;
