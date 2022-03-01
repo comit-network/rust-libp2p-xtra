@@ -95,6 +95,11 @@ async fn can_request_two_protocols() {
     assert!(false)
 }
 
+#[tokio::test]
+async fn connection_non_listening_peer_times_out() {
+    assert!(false)
+}
+
 async fn alice_and_bob<const AN: usize, const BN: usize>(
     alice_inbound_substream_handlers: [(
         &'static str,

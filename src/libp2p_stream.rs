@@ -29,6 +29,7 @@ pub type Connection = (
     BoxFuture<'static, ()>,
 );
 
+// TODO: Inline this abstraction.
 #[derive(Clone)]
 pub struct Node {
     inner: Boxed<Connection>,
@@ -140,6 +141,7 @@ impl Node {
         }
     }
 
+    // TODO: After inlining, create concept of `ListenerId` to properly track listeners?
     pub fn listen_on(
         &self,
         address: Multiaddr,
