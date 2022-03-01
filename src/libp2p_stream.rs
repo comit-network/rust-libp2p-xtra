@@ -209,6 +209,6 @@ impl Control {
 pub enum Error {
     #[error("Timeout in protocol negotiation")]
     NegotiationTimeoutReached,
-    #[error("Failed to negotiate protcol")]
+    #[error("Failed to negotiate protocol")]
     NegotiationFailed(#[from] NegotiationError),
 }

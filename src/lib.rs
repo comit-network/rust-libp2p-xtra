@@ -88,7 +88,7 @@ pub enum Error {
     NoConnection(PeerId),
     #[error("Timeout in protocol negotiation")]
     NegotiationTimeoutReached,
-    #[error("Failed to negotiate protcol")]
+    #[error("Failed to negotiate protocol")]
     NegotiationFailed(#[from] NegotiationError), // TODO(public-api): Consider breaking this up.
     #[error("Bad connection")]
     BadConnection(#[from] yamux::ConnectionError), // TODO(public-api): Consider removing this.
