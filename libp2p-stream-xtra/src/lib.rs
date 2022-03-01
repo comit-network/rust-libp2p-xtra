@@ -158,7 +158,7 @@ impl Node {
                             .get(&protocol)
                             .expect("Cannot negotiate a protocol that we don't support");
 
-                        let _ = channel.send(NewInboundSubstream { peer, stream }).await;
+                        let _ = channel.do_send(NewInboundSubstream { peer, stream });
                     }
                 }
             },
@@ -214,7 +214,7 @@ impl Node {
                     let (peer, control, incoming_substreams, worker) = node.connect(msg.0).await?;
 
                     let _ = this
-                        .send(NewConnection {
+                        .do_send_async(NewConnection {
                             peer,
                             control,
                             incoming_substreams,
@@ -254,7 +254,7 @@ impl Node {
                         let (peer, control, incoming_substreams, worker) =
                             stream.try_next().await?.context("Listener closed")?;
 
-                        this.send(NewConnection {
+                        this.do_send_async(NewConnection {
                             peer,
                             control,
                             incoming_substreams,
