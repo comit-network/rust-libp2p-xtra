@@ -2,10 +2,10 @@ use anyhow::Context as _;
 use anyhow::Result;
 use asynchronous_codec::Bytes;
 use futures::{SinkExt, StreamExt};
-use libp2p_stream::libp2p::identity::Keypair;
-use libp2p_stream::libp2p::transport::MemoryTransport;
-use libp2p_stream::libp2p::PeerId;
-use libp2p_stream_xtra::{
+use libp2p_xtra::libp2p::identity::Keypair;
+use libp2p_xtra::libp2p::transport::MemoryTransport;
+use libp2p_xtra::libp2p::PeerId;
+use libp2p_xtra::{
     Connect, Disconnect, GetConnectionStats, ListenOn, NewInboundSubstream, Node, OpenSubstream,
 };
 use std::collections::HashSet;
@@ -81,9 +81,7 @@ async fn cannot_open_substream_for_unhandled_protocol() {
 
     assert!(matches!(
         error,
-        libp2p_stream_xtra::Error::FailedToOpen(libp2p_stream::Error::NegotiationFailed(
-            libp2p_stream::NegotiationError::Failed
-        ))
+        libp2p_xtra::Error::NegotiationFailed(libp2p_xtra::NegotiationError::Failed)
     ))
 }
 
@@ -169,10 +167,7 @@ impl HelloWorld {
 
 impl xtra::Actor for HelloWorld {}
 
-async fn hello_world_dialer(
-    stream: libp2p_stream::Substream,
-    name: &'static str,
-) -> Result<String> {
+async fn hello_world_dialer(stream: libp2p_xtra::Substream, name: &'static str) -> Result<String> {
     let mut stream = asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec);
 
     stream.send(Bytes::from(name)).await?;
@@ -182,7 +177,7 @@ async fn hello_world_dialer(
     Ok(message)
 }
 
-async fn hello_world_listener(stream: libp2p_stream::Substream) -> Result<()> {
+async fn hello_world_listener(stream: libp2p_xtra::Substream) -> Result<()> {
     let mut stream =
         asynchronous_codec::Framed::new(stream, asynchronous_codec::LengthCodec).fuse();
 

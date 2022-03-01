@@ -1066,54 +1066,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "libp2p-plaintext"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "962c0fb0e7212fb96a69b87f2d09bcefd317935239bdc79cda900e7a8897a3fe"
-dependencies = [
- "asynchronous-codec",
- "bytes",
- "futures",
- "libp2p-core",
- "log",
- "prost",
- "prost-build",
- "unsigned-varint",
- "void",
-]
-
-[[package]]
-name = "libp2p-stream"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "asynchronous-codec",
- "console-subscriber",
- "futures",
- "libp2p-core",
- "libp2p-noise",
- "libp2p-plaintext",
- "multistream-select",
- "thiserror",
- "tokio",
- "void",
- "yamux",
-]
-
-[[package]]
-name = "libp2p-stream-xtra"
+name = "libp2p-xtra"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "asynchronous-codec",
+ "console-subscriber",
  "futures",
- "libp2p-stream",
+ "libp2p-core",
+ "libp2p-noise",
+ "multistream-select",
  "rand 0.8.5",
  "thiserror",
  "tokio",
  "tokio-tasks",
  "tracing",
+ "void",
  "xtra",
  "xtra_productivity",
  "yamux",
@@ -2361,10 +2330,6 @@ name = "unsigned-varint"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86a8dc7f45e4c1b0d30e43038c38f274e77af056aa5f74b93c2cf9eb3c1c836"
-dependencies = [
- "asynchronous-codec",
- "bytes",
-]
 
 [[package]]
 name = "untrusted"

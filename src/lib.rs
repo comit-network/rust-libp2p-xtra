@@ -1,52 +1,117 @@
-pub mod multiaddress_ext;
-mod verify_peer_id;
-
 pub use libp2p_core as libp2p;
 pub use multistream_select::NegotiationError;
 
-use std::io;
-use std::time::Duration;
+mod libp2p_stream;
+mod multiaddress_ext;
+mod verify_peer_id;
 
+use anyhow::bail;
+use anyhow::Context as _;
 use anyhow::Result;
-use futures::channel::mpsc;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use futures::{AsyncRead, AsyncWrite, FutureExt, SinkExt, StreamExt, TryStreamExt};
-use libp2p_core::transport::timeout::TransportTimeout;
-use libp2p_core::transport::{Boxed, ListenerEvent};
-use libp2p_core::upgrade::Version;
-use libp2p_core::{upgrade, Endpoint, Negotiated};
-use libp2p_noise as noise;
+use futures::TryStreamExt;
+use futures::{AsyncRead, AsyncWrite};
+use libp2p_core::identity::Keypair;
+use libp2p_core::{Multiaddr, Negotiated, PeerId, Transport};
+use libp2p_stream::Control;
+use multiaddress_ext::MultiaddrExt as _;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use thiserror::Error;
-use void::Void;
-use yamux::Mode;
-
-use crate::libp2p::identity::Keypair;
-use crate::libp2p::Multiaddr;
-use crate::libp2p::PeerId;
-use crate::libp2p::Transport;
-use crate::verify_peer_id::VerifyPeerId;
+use tokio_tasks::Tasks;
+use xtra::message_channel::StrongMessageChannel;
+use xtra::Context;
+use xtra_productivity::xtra_productivity;
 
 pub type Substream = Negotiated<yamux::Stream>;
 
-pub type Connection = (
-    PeerId,
-    Control,
-    BoxStream<'static, Result<Result<(Substream, &'static str), Error>, yamux::ConnectionError>>,
-    BoxFuture<'static, ()>,
-);
-
-#[derive(Clone)]
+/// An actor for managing multiplexed connections over a given transport.
+///
+/// The actor does not inflict any policy on connection and/or protocol management.
+/// New connections can be established by sending a [`Connect`] messages. Existing connections can be disconnected by sending [`Disconnect`]. Listening for incoming connections is done by sending a [`ListenOn`] message.
+/// To list the current state, send the [`GetConnectionStats`] message.
+///
+/// The combination of the above should make it possible to implement a fairly large number of policies. For example, to maintain a connection to a specific node, you can regularly check if the connection is still established by sending [`GetConnectionStats`] and react accordingly (f.e. sending [`Connect`] in case the connection has disappeared).
+///
+/// Once a connection with a peer is established, both sides can open substreams on top of the connection. Any incoming substream will - assuming the protocol is supported by the node - trigger a [`NewInboundSubstream`] message to the actor provided in the constructor.
+/// Opening a new substream can be achieved by sending the [`OpenSubstream`] message.
 pub struct Node {
-    inner: Boxed<Connection>,
+    node: libp2p_stream::Node,
+    tasks: Tasks,
+    controls: HashMap<PeerId, (Control, Tasks)>,
+    inbound_substream_channels:
+        HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
+    listen_addresses: HashSet<Multiaddr>,
+}
+
+/// Open a substream to the provided peer.
+///
+/// Fails if we are not connected to the peer or the peer does not support the requested protocol.
+pub struct OpenSubstream {
+    pub peer: PeerId,
+    pub protocol: &'static str,
+}
+
+/// Connect to the given [`Multiaddr`].
+///
+/// The address must contain a `/p2p` suffix.
+/// Will fail if we are already connected to the peer.
+pub struct Connect(pub Multiaddr);
+
+/// Disconnect from the given peer.
+pub struct Disconnect(pub PeerId);
+
+/// Listen on the provided [`Multiaddr`].
+///
+/// For this to work, the [`Node`] needs to be constructed with a compatible transport.
+/// In other words, you cannot listen on a `/memory` address if you haven't configured a `/memory` transport.
+pub struct ListenOn(pub Multiaddr);
+
+/// Retrieve [`ConnectionStats`] from the [`Node`].
+pub struct GetConnectionStats;
+
+pub struct ConnectionStats {
+    pub connected_peers: HashSet<PeerId>,
+    pub listen_addresses: HashSet<Multiaddr>,
+}
+
+/// Notifies an actor of a new, inbound substream from the given peer.
+pub struct NewInboundSubstream {
+    pub peer: PeerId,
+    pub stream: libp2p_stream::Substream,
+}
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("No connection to {0}")]
+    NoConnection(PeerId),
+    #[error("Timeout in protocol negotiation")]
+    NegotiationTimeoutReached,
+    #[error("Failed to negotiate protcol")]
+    NegotiationFailed(#[from] NegotiationError), // TODO(public-api): Consider breaking this up.
+    #[error("Bad connection")]
+    BadConnection(#[from] yamux::ConnectionError), // TODO(public-api): Consider removing this.
 }
 
 impl Node {
-    pub fn new<T>(
+    /// Construct a new [`Node`] from the provided transport.
+    ///
+    /// A [`Node`]s identity ([`PeerId`]) will be computed from the given [`Keypair`].
+    ///
+    /// The `connection_timeout` is applied to:
+    /// 1. Connection upgrades (i.e. noise handshake, yamux upgrade, etc)
+    /// 2. Protocol negotiations
+    ///
+    /// The provided substream handlers are actors that will be given the fully-negotiated substreams whenever a peer opens a new substream for the provided protocol.
+    pub fn new<T, const N: usize>(
         transport: T,
         identity: Keypair,
-        supported_inbound_protocols: Vec<&'static str>,
         connection_timeout: Duration,
+        inbound_substream_handlers: [(
+            &'static str,
+            Box<dyn StrongMessageChannel<NewInboundSubstream>>,
+        ); N],
     ) -> Self
     where
         T: Transport + Clone + Send + Sync + 'static,
@@ -56,166 +121,252 @@ impl Node {
         T::Dial: Send + 'static,
         T::ListenerUpgrade: Send + 'static,
     {
-        let identity = noise::Keypair::<noise::X25519Spec>::new()
-            .into_authentic(&identity)
-            .expect("ed25519 signing does not fail");
-
-        let authenticated = transport.and_then(|conn, endpoint| {
-            upgrade::apply(
-                conn,
-                noise::NoiseConfig::xx(identity).into_authenticated(),
-                endpoint,
-                Version::V1,
-            )
-        });
-
-        let peer_id_verified = VerifyPeerId::new(authenticated);
-
-        let multiplexed = peer_id_verified.and_then(|(peer_id, conn), endpoint| {
-            upgrade::apply(
-                conn,
-                upgrade::from_fn::<_, _, _, _, _, Void>(
-                    b"/yamux/1.0.0",
-                    move |conn, endpoint| async move {
-                        Ok(match endpoint {
-                            Endpoint::Dialer => (
-                                peer_id,
-                                yamux::Connection::new(
-                                    conn,
-                                    yamux::Config::default(),
-                                    Mode::Client,
-                                ),
-                            ),
-                            Endpoint::Listener => (
-                                peer_id,
-                                yamux::Connection::new(
-                                    conn,
-                                    yamux::Config::default(),
-                                    Mode::Server,
-                                ),
-                            ),
-                        })
-                    },
-                ),
-                endpoint,
-                Version::V1,
-            )
-        });
-
-        let protocols_negotiated = multiplexed.map(move |(peer, mut connection), _| {
-            let control = Control {
-                inner: connection.control(),
-                connection_timeout,
-            };
-
-            let (mut sender, receiver) = mpsc::unbounded();
-
-            let worker = async move {
-                while let Ok(Some(stream)) = connection.next_stream().await {
-                    let _ = sender.send(stream).await; // ignore error for now.
-                }
-            }
-            .boxed();
-
-            let incoming = receiver
-                .then(move |stream| {
-                    let supported_protocols = supported_inbound_protocols.clone();
-
-                    async move {
-                        let result = tokio::time::timeout(
-                            connection_timeout,
-                            multistream_select::listener_select_proto(stream, &supported_protocols),
-                        )
-                        .await;
-
-                        match result {
-                            Ok(Ok((protocol, stream))) => Ok(Ok((stream, *protocol))),
-                            Ok(Err(e)) => Ok(Err(Error::NegotiationFailed(e))),
-                            Err(_timeout) => Ok(Err(Error::NegotiationTimeoutReached)),
-                        }
-                    }
-                })
-                .boxed();
-
-            (peer, control, incoming, worker)
-        });
-
-        let timeout_applied = TransportTimeout::new(protocols_negotiated, connection_timeout);
-
         Self {
-            inner: timeout_applied.boxed(),
+            node: libp2p_stream::Node::new(
+                transport,
+                identity,
+                inbound_substream_handlers
+                    .iter()
+                    .map(|(proto, _)| *proto)
+                    .collect(),
+                connection_timeout,
+            ),
+            tasks: Tasks::default(),
+            inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
+            controls: HashMap::default(),
+            listen_addresses: HashSet::default(),
         }
     }
 
-    pub fn listen_on(
-        &self,
-        address: Multiaddr,
-    ) -> Result<BoxStream<'static, io::Result<Connection>>> {
-        let stream = self
-            .inner
+    fn drop_connection(&mut self, peer: &PeerId) {
+        let (control, tasks) = match self.controls.remove(&peer) {
+            None => return,
+            Some(control) => control,
+        };
+
+        // TODO: Evaluate whether dropping and closing has to be in a particular order.
+        self.tasks.add(async move {
+            control.close_connection().await;
+            drop(tasks);
+        });
+    }
+}
+
+#[xtra_productivity]
+impl Node {
+    async fn handle(&mut self, msg: NewConnection, ctx: &mut Context<Self>) {
+        let this = ctx.address().expect("we are alive");
+
+        let NewConnection {
+            peer,
+            control,
+            mut incoming_substreams,
+            worker,
+        } = msg;
+
+        let mut tasks = Tasks::default();
+        tasks.add(worker);
+        tasks.add_fallible(
+            {
+                let inbound_substream_channels = self
+                    .inbound_substream_channels
+                    .iter()
+                    .map(|(proto, channel)| {
+                        (
+                            proto.to_owned(),
+                            StrongMessageChannel::clone_channel(channel.as_ref()),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+
+                async move {
+                    loop {
+                        let (stream, protocol) = match incoming_substreams.try_next().await {
+                            Ok(Some(Ok((stream, protocol)))) => (stream, protocol),
+                            Ok(Some(Err(libp2p_stream::Error::NegotiationTimeoutReached))) => {
+                                tracing::debug!("Hit timeout while negotiating substream");
+                                continue;
+                            }
+                            Ok(Some(Err(libp2p_stream::Error::NegotiationFailed(e)))) => {
+                                tracing::debug!("Failed to negotiate substream: {}", e);
+                                continue;
+                            }
+                            Ok(None) => bail!("Substream listener closed"),
+                            Err(e) => bail!(e),
+                        };
+
+                        let channel = inbound_substream_channels
+                            .get(&protocol)
+                            .expect("Cannot negotiate a protocol that we don't support");
+
+                        let _ = channel.do_send(NewInboundSubstream { peer, stream });
+                    }
+                }
+            },
+            move |error| async move {
+                let _ = this.send(ConnectionFailed { peer, error }).await;
+            },
+        );
+        self.controls.insert(peer, (control, tasks));
+    }
+
+    async fn handle(&mut self, msg: ListenerFailed) {
+        tracing::debug!("Listener failed: {:#}", msg.error);
+
+        self.listen_addresses.remove(&msg.address);
+    }
+
+    async fn handle(&mut self, msg: FailedToConnect) {
+        tracing::debug!("Failed to connect: {:#}", msg.error);
+        let peer = msg.peer;
+
+        self.drop_connection(&peer);
+    }
+
+    async fn handle(&mut self, msg: ConnectionFailed) {
+        tracing::debug!("Connection failed: {:#}", msg.error);
+        let peer = msg.peer;
+
+        self.drop_connection(&peer);
+    }
+
+    async fn handle(&mut self, _: GetConnectionStats) -> ConnectionStats {
+        ConnectionStats {
+            connected_peers: self.controls.keys().copied().collect(),
+            listen_addresses: self.listen_addresses.clone(),
+        }
+    }
+
+    async fn handle(&mut self, msg: Connect, ctx: &mut Context<Self>) -> Result<()> {
+        let this = ctx.address().expect("we are alive");
+
+        let peer = msg
+            .0
             .clone()
-            .listen_on(address)?
-            .map_ok(|e| match e {
-                ListenerEvent::NewAddress(_) => Ok(None), // TODO: Should we map these as well? How do we otherwise track our listeners?
-                ListenerEvent::Upgrade { upgrade, .. } => Ok(Some(upgrade)),
-                ListenerEvent::AddressExpired(_) => Ok(None),
-                ListenerEvent::Error(e) => Err(e),
-            })
-            .try_filter_map(|o| async move { o })
-            .and_then(|upgrade| upgrade)
-            .boxed();
+            .extract_peer_id()
+            .context("Failed to extract PeerId from address")?;
+
+        self.tasks.add_fallible(
+            {
+                let node = self.node.clone();
+                let this = this.clone();
+
+                async move {
+                    let (peer, control, incoming_substreams, worker) = node.connect(msg.0).await?;
+
+                    let _ = this
+                        .do_send_async(NewConnection {
+                            peer,
+                            control,
+                            incoming_substreams,
+                            worker,
+                        })
+                        .await;
+
+                    anyhow::Ok(())
+                }
+            },
+            move |error| async move {
+                let _ = this.send(FailedToConnect { peer, error }).await;
+            },
+        );
+
+        Ok(())
+    }
+
+    async fn handle(&mut self, msg: Disconnect) {
+        self.drop_connection(&msg.0);
+    }
+
+    async fn handle(&mut self, msg: ListenOn, ctx: &mut Context<Self>) {
+        let this = ctx.address().expect("we are alive");
+        let listen_address = msg.0.clone();
+
+        self.listen_addresses.insert(listen_address.clone()); // FIXME: This address could be a "catch-all" like "0.0.0.0" which actually results in listening on multiple interfaces.
+        self.tasks.add_fallible(
+            {
+                let node = self.node.clone();
+                let this = this.clone();
+
+                async move {
+                    let mut stream = node.listen_on(msg.0)?;
+
+                    loop {
+                        let (peer, control, incoming_substreams, worker) =
+                            stream.try_next().await?.context("Listener closed")?;
+
+                        this.do_send_async(NewConnection {
+                            peer,
+                            control,
+                            incoming_substreams,
+                            worker,
+                        })
+                        .await?;
+                    }
+                }
+            },
+            |error| async move {
+                let _ = this
+                    .send(ListenerFailed {
+                        address: listen_address,
+                        error,
+                    })
+                    .await;
+            },
+        );
+    }
+
+    async fn handle(&mut self, msg: OpenSubstream) -> Result<libp2p_stream::Substream, Error> {
+        let peer = msg.peer;
+        let protocol = msg.protocol;
+
+        let (control, _) = self
+            .controls
+            .get_mut(&peer)
+            .ok_or_else(|| Error::NoConnection(peer))?;
+
+        let stream = control
+            .open_substream(protocol)
+            .await?
+            .map_err(|e| match e {
+                libp2p_stream::Error::NegotiationFailed(e) => Error::NegotiationFailed(e),
+                libp2p_stream::Error::NegotiationTimeoutReached => Error::NegotiationTimeoutReached,
+            })?;
 
         Ok(stream)
     }
-
-    pub async fn connect(&self, address: Multiaddr) -> Result<Connection> {
-        // TODO: Either assume `Multiaddr` ends with a `PeerId` or pass it in separately.
-
-        let connection = self.inner.clone().dial(address)?.await?;
-
-        Ok(connection)
-    }
 }
 
-pub struct Control {
-    inner: yamux::Control,
-    connection_timeout: Duration,
+impl xtra::Actor for Node {}
+
+struct ListenerFailed {
+    address: Multiaddr,
+    error: anyhow::Error,
 }
 
-impl Control {
-    pub async fn open_substream(
-        &mut self,
-        protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
-    ) -> Result<Result<Negotiated<yamux::Stream>, Error>, yamux::ConnectionError> {
-        let stream = self.inner.open_stream().await?;
-
-        let result = tokio::time::timeout(self.connection_timeout, async {
-            let (_, stream) =
-                multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
-                    .await?;
-
-            Ok(stream)
-        })
-        .await;
-
-        let stream = match result {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(e)) => return Ok(Err(Error::NegotiationFailed(e))),
-            Err(_timeout) => return Ok(Err(Error::NegotiationTimeoutReached)),
-        };
-
-        Ok(Ok(stream))
-    }
-
-    pub async fn close_connection(mut self) {
-        let _ = self.inner.close().await;
-    }
+struct FailedToConnect {
+    peer: PeerId,
+    error: anyhow::Error,
 }
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("Timeout in protocol negotiation")]
-    NegotiationTimeoutReached,
-    #[error("Failed to negotiate protcol")]
-    NegotiationFailed(#[from] NegotiationError),
+struct ConnectionFailed {
+    peer: PeerId,
+    error: anyhow::Error,
+}
+
+struct NewConnection {
+    peer: PeerId,
+    control: Control,
+    incoming_substreams: BoxStream<
+        'static,
+        Result<
+            Result<(libp2p_stream::Substream, &'static str), libp2p_stream::Error>,
+            yamux::ConnectionError,
+        >,
+    >,
+    worker: BoxFuture<'static, ()>,
+}
+
+impl xtra::Message for NewInboundSubstream {
+    type Result = ();
 }
