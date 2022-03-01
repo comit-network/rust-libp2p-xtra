@@ -17,9 +17,16 @@ use xtra::message_channel::StrongMessageChannel;
 use xtra::Context;
 use xtra_productivity::xtra_productivity;
 
-// TODO:
-// 4. Think about load testing
-// 6. Audit for deadlocks (always use async sending in message channels?)
+/// An actor for managing multiplexed connections over a given transport.
+///
+/// The actor does not inflict any policy on connection and/or protocol management.
+/// New connections can be established by sending a [`Connect`] messages. Existing connections can be disconnected by sending [`Disconnect`]. Listening for incoming connections is done by sending a [`ListenOn`] message.
+/// To list the current state, send the [`GetConnectionStats`] message.
+///
+/// The combination of the above should make it possible to implement a fairly large number of policies. For example, to maintain a connection to a specific node, you can regularly check if the connection is still established by sending [`GetConnectionStats`] and react accordingly (f.e. sending [`Connect`] in case the connection has disappeared).
+///
+/// Once a connection with a peer is established, both sides can open substreams on top of the connection. Any incoming substream will - assuming the protocol is supported by the node - trigger a [`NewInboundSubstream`] message to the actor provided in the constructor.
+/// Opening a new substream can be achieved by sending the [`OpenSubstream`] message.
 pub struct Node {
     node: libp2p_stream::Node,
     tasks: Tasks,
@@ -29,17 +36,30 @@ pub struct Node {
     listen_addresses: HashSet<Multiaddr>,
 }
 
+/// Open a substream to the provided peer.
+///
+/// Fails if we are not connected to the peer or the peer does not support the requested protocol.
 pub struct OpenSubstream {
     pub peer: PeerId,
     pub protocol: &'static str,
 }
 
+/// Connect to the given [`Multiaddr`].
+///
+/// The address must contain a `/p2p` suffix.
+/// Will fail if we are already connected to the peer.
 pub struct Connect(pub Multiaddr);
 
+/// Disconnect from the given peer.
 pub struct Disconnect(pub PeerId);
 
+/// Listen on the provided [`Multiaddr`].
+///
+/// For this to work, the [`Node`] needs to be constructed with a compatible transport.
+/// In other words, you cannot listen on a `/memory` address if you haven't configured a `/memory` transport.
 pub struct ListenOn(pub Multiaddr);
 
+/// Retrieve [`ConnectionStats`] from the [`Node`].
 pub struct GetConnectionStats;
 
 pub struct ConnectionStats {
@@ -47,6 +67,7 @@ pub struct ConnectionStats {
     pub listen_addresses: HashSet<Multiaddr>,
 }
 
+/// Notifies an actor of a new, inbound substream from the given peer.
 pub struct NewInboundSubstream {
     pub peer: PeerId,
     pub stream: libp2p_stream::Substream,
@@ -63,6 +84,15 @@ pub enum Error {
 }
 
 impl Node {
+    /// Construct a new [`Node`] from the provided transport.
+    ///
+    /// A [`Node`]s identity ([`PeerId`]) will be computed from the given [`Keypair`].
+    ///
+    /// The `connection_timeout` is applied to:
+    /// 1. Connection upgrades (i.e. noise handshake, yamux upgrade, etc)
+    /// 2. Protocol negotiations
+    ///
+    /// The provided substream handlers are actors that will be given the fully-negotiated substreams whenever a peer opens a new substream for the provided protocol.
     pub fn new<T, const N: usize>(
         transport: T,
         identity: Keypair,
