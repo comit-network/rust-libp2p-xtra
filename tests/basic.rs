@@ -87,8 +87,6 @@ async fn cannot_open_substream_for_unhandled_protocol() {
 
 #[tokio::test]
 async fn cannot_connect_twice() {
-    let (_, bob_peer_id, alice, _bob) = alice_and_bob([], []).await;
-
     assert!(false)
 }
 
