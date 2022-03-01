@@ -18,9 +18,6 @@ use xtra::Context;
 use xtra_productivity::xtra_productivity;
 
 // TODO:
-// 1. Group tasks by connection so we can drop them
-// 2. Provide a disconnect API
-// 3. Write tests for `GetConnectionStats`
 // 4. Think about load testing
 // 5. Make timeouts configurable
 // 6. Audit for deadlocks (always use async sending in message channels?)
@@ -92,7 +89,6 @@ impl Node {
                     .iter()
                     .map(|(proto, _)| *proto)
                     .collect(),
-                Duration::from_secs(20),
                 Duration::from_secs(20),
             ),
             tasks: Tasks::default(),

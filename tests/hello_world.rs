@@ -17,14 +17,12 @@ async fn hello_world() {
         alice_id.clone(),
         vec![],
         Duration::from_secs(20),
-        Duration::from_secs(10),
     );
     let bob = Node::new(
         MemoryTransport::default(),
         bob_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
-        Duration::from_secs(10),
     );
 
     let mut alice_inc = alice
@@ -71,14 +69,12 @@ async fn no_protocol_supported() {
         alice_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
-        Duration::from_secs(10),
     );
     let bob = Node::new(
         MemoryTransport::default(),
         bob_id.clone(),
         vec!["/hello-world/1.0.0"],
         Duration::from_secs(20),
-        Duration::from_secs(10),
     );
 
     let mut alice_inc = alice

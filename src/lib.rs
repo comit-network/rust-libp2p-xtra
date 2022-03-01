@@ -46,8 +46,7 @@ impl Node {
         transport: T,
         identity: Keypair,
         supported_inbound_protocols: Vec<&'static str>,
-        upgrade_timeout: Duration,
-        negotiation_timeout: Duration,
+        connection_timeout: Duration,
     ) -> Self
     where
         T: Transport + Clone + Send + Sync + 'static,
@@ -106,7 +105,7 @@ impl Node {
         let protocols_negotiated = multiplexed.map(move |(peer, mut connection), _| {
             let control = Control {
                 inner: connection.control(),
-                negotiation_timeout,
+                connection_timeout,
             };
 
             let (mut sender, receiver) = mpsc::unbounded();
@@ -124,7 +123,7 @@ impl Node {
 
                     async move {
                         let result = tokio::time::timeout(
-                            negotiation_timeout,
+                            connection_timeout,
                             multistream_select::listener_select_proto(stream, &supported_protocols),
                         )
                         .await;
@@ -141,7 +140,7 @@ impl Node {
             (peer, control, incoming, worker)
         });
 
-        let timeout_applied = TransportTimeout::new(protocols_negotiated, upgrade_timeout);
+        let timeout_applied = TransportTimeout::new(protocols_negotiated, connection_timeout);
 
         Self {
             inner: timeout_applied.boxed(),
@@ -180,7 +179,7 @@ impl Node {
 
 pub struct Control {
     inner: yamux::Control,
-    negotiation_timeout: Duration,
+    connection_timeout: Duration,
 }
 
 impl Control {
@@ -190,7 +189,7 @@ impl Control {
     ) -> Result<Result<Negotiated<yamux::Stream>, Error>, yamux::ConnectionError> {
         let stream = self.inner.open_stream().await?;
 
-        let result = tokio::time::timeout(self.negotiation_timeout, async {
+        let result = tokio::time::timeout(self.connection_timeout, async {
             let (_, stream) =
                 multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
                     .await?;
