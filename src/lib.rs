@@ -316,7 +316,7 @@ impl Node {
         );
     }
 
-    async fn handle(&mut self, msg: OpenSubstream) -> Result<libp2p_stream::Substream, Error> {
+    async fn handle(&mut self, msg: OpenSubstream) -> Result<Substream, Error> {
         let peer = msg.peer;
         let protocol = msg.protocol;
 
