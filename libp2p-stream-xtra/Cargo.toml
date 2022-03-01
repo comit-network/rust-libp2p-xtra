@@ -16,6 +16,7 @@ anyhow = "1"
 futures = "0.3"
 thiserror = "1"
 rand = "0.8"
+yamux = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

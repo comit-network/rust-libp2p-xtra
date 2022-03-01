@@ -15,7 +15,7 @@ async fn hello_world() {
     let alice = Node::new(
         MemoryTransport::default(),
         alice_id.clone(),
-        vec!["/hello-world/1.0.0"],
+        vec![],
         Duration::from_secs(20),
         Duration::from_secs(10),
     );
@@ -40,8 +40,65 @@ async fn hello_world() {
                 .unwrap()
         )
     );
-    let (_, mut alice_control, alice_streams) = alice_conn.unwrap();
-    let (_, _bob_control, bob_streams) = bob_conn.unwrap();
+    let (_, mut alice_control, alice_streams, alice_worker) = alice_conn.unwrap();
+    let (_, _bob_control, bob_streams, bob_worker) = bob_conn.unwrap();
+
+    tokio::spawn(alice_worker);
+    tokio::spawn(bob_worker);
+    tokio::spawn(substream_handler(alice_streams));
+    tokio::spawn(substream_handler(bob_streams));
+
+    let alice_hello_world = alice_control
+        .open_substream("/hello-world/1.0.0")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let alice_out = hello_world_dialer(alice_hello_world, "Alice")
+        .await
+        .unwrap();
+
+    assert_eq!(&alice_out, "Hello Alice!")
+}
+
+#[tokio::test]
+async fn no_protocol_supported() {
+    let alice_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
+    let bob_id = libp2p_stream::libp2p::identity::Keypair::generate_ed25519();
+
+    let alice = Node::new(
+        MemoryTransport::default(),
+        alice_id.clone(),
+        vec!["/hello-world/1.0.0"],
+        Duration::from_secs(20),
+        Duration::from_secs(10),
+    );
+    let bob = Node::new(
+        MemoryTransport::default(),
+        bob_id.clone(),
+        vec!["/hello-world/1.0.0"],
+        Duration::from_secs(20),
+        Duration::from_secs(10),
+    );
+
+    let mut alice_inc = alice
+        .listen_on("/memory/10001".parse().unwrap())
+        .unwrap()
+        .fuse();
+
+    let (alice_conn, bob_conn) = tokio::join!(
+        alice_inc.select_next_some(),
+        bob.connect(
+            format!("/memory/10001/p2p/{}", alice_id.public().to_peer_id())
+                .parse()
+                .unwrap()
+        )
+    );
+    let (_, mut alice_control, alice_streams, alice_worker) = alice_conn.unwrap();
+    let (_, _bob_control, bob_streams, bob_worker) = bob_conn.unwrap();
+
+    tokio::spawn(alice_worker);
+    tokio::spawn(bob_worker);
 
     tokio::spawn(substream_handler(alice_streams));
     tokio::spawn(substream_handler(bob_streams));
@@ -49,6 +106,7 @@ async fn hello_world() {
     let alice_hello_world = alice_control
         .open_substream("/hello-world/1.0.0")
         .await
+        .unwrap()
         .unwrap();
 
     let alice_out = hello_world_dialer(alice_hello_world, "Alice")
@@ -84,11 +142,15 @@ async fn hello_world_listener(stream: Negotiated<yamux::Stream>) -> Result<()> {
 }
 
 async fn substream_handler(
-    mut new_substreams: impl Stream<Item = Result<(Negotiated<yamux::Stream>, &'static str), libp2p_stream::Error>>
-        + Unpin,
+    mut new_substreams: impl Stream<
+            Item = Result<
+                Result<(Negotiated<yamux::Stream>, &'static str), libp2p_stream::Error>,
+                yamux::ConnectionError,
+            >,
+        > + Unpin,
 ) {
     loop {
-        let (stream, protocol) = new_substreams.next().await.unwrap().unwrap();
+        let (stream, protocol) = new_substreams.next().await.unwrap().unwrap().unwrap();
 
         match protocol {
             "/hello-world/1.0.0" => {

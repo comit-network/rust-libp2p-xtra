@@ -78,8 +78,6 @@ async fn cannot_open_substream_for_unhandled_protocol() {
         .unwrap()
         .unwrap_err();
 
-    dbg!(&error);
-
     assert!(matches!(
         error,
         libp2p_stream_xtra::Error::FailedToOpen(libp2p_stream::Error::NegotiationFailed(

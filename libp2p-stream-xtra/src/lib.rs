@@ -1,6 +1,7 @@
 use anyhow::bail;
 use anyhow::Context as _;
 use anyhow::Result;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use futures::{AsyncRead, AsyncWrite};
@@ -62,6 +63,8 @@ pub enum Error {
     NoConnection(PeerId),
     #[error("Failed to open substream")]
     FailedToOpen(#[from] libp2p_stream::Error),
+    #[error("Bad connection")]
+    BadConnection(#[from] yamux::ConnectionError), // TDOO: Get rid of this variant
 }
 
 impl Node {
@@ -122,9 +125,11 @@ impl Node {
             peer,
             control,
             mut incoming_substreams,
+            worker,
         } = msg;
 
         let mut tasks = Tasks::default();
+        tasks.add(worker);
         tasks.add_fallible(
             {
                 let inbound_substream_channels = self
@@ -141,16 +146,16 @@ impl Node {
                 async move {
                     loop {
                         let (stream, protocol) = match incoming_substreams.try_next().await {
-                            Ok(Some((stream, protocol))) => (stream, protocol),
-                            Ok(None) => bail!("Substream listener closed"),
-                            Err(libp2p_stream::Error::NegotiationTimeoutReached) => {
+                            Ok(Some(Ok((stream, protocol)))) => (stream, protocol),
+                            Ok(Some(Err(libp2p_stream::Error::NegotiationTimeoutReached))) => {
                                 tracing::debug!("Hit timeout while negotiating substream");
                                 continue;
                             }
-                            Err(libp2p_stream::Error::NegotiationFailed(e)) => {
+                            Ok(Some(Err(libp2p_stream::Error::NegotiationFailed(e)))) => {
                                 tracing::debug!("Failed to negotiate substream: {}", e);
                                 continue;
                             }
+                            Ok(None) => bail!("Substream listener closed"),
                             Err(e) => bail!(e),
                         };
 
@@ -211,13 +216,14 @@ impl Node {
                 let this = this.clone();
 
                 async move {
-                    let (peer, control, incoming_substreams) = node.connect(msg.0).await?;
+                    let (peer, control, incoming_substreams, worker) = node.connect(msg.0).await?;
 
                     let _ = this
                         .send(NewConnection {
                             peer,
                             control,
                             incoming_substreams,
+                            worker,
                         })
                         .await;
 
@@ -250,13 +256,14 @@ impl Node {
                     let mut stream = node.listen_on(msg.0)?;
 
                     loop {
-                        let (peer, control, incoming_substreams) =
+                        let (peer, control, incoming_substreams, worker) =
                             stream.try_next().await?.context("Listener closed")?;
 
                         this.send(NewConnection {
                             peer,
                             control,
                             incoming_substreams,
+                            worker,
                         })
                         .await?;
                     }
@@ -282,7 +289,7 @@ impl Node {
             .get_mut(&peer)
             .ok_or_else(|| Error::NoConnection(peer))?;
 
-        let stream = control.open_substream(protocol).await?;
+        let stream = control.open_substream(protocol).await??;
 
         Ok(stream)
     }
@@ -308,8 +315,14 @@ struct ConnectionFailed {
 struct NewConnection {
     peer: PeerId,
     control: Control,
-    incoming_substreams:
-        BoxStream<'static, Result<(libp2p_stream::Substream, &'static str), libp2p_stream::Error>>,
+    incoming_substreams: BoxStream<
+        'static,
+        Result<
+            Result<(libp2p_stream::Substream, &'static str), libp2p_stream::Error>,
+            yamux::ConnectionError,
+        >,
+    >,
+    worker: BoxFuture<'static, ()>,
 }
 
 impl xtra::Message for NewInboundSubstream {

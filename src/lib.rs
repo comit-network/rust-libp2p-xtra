@@ -8,8 +8,10 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::channel::mpsc;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use futures::{AsyncRead, AsyncWrite, StreamExt, TryStreamExt};
+use futures::{AsyncRead, AsyncWrite, FutureExt, SinkExt, StreamExt, TryStreamExt};
 use libp2p_core::transport::timeout::TransportTimeout;
 use libp2p_core::transport::{Boxed, ListenerEvent};
 use libp2p_core::upgrade::Version;
@@ -30,7 +32,8 @@ pub type Substream = Negotiated<yamux::Stream>;
 pub type Connection = (
     PeerId,
     Control,
-    BoxStream<'static, Result<(Substream, &'static str), Error>>,
+    BoxStream<'static, Result<Result<(Substream, &'static str), Error>, yamux::ConnectionError>>,
+    BoxFuture<'static, ()>,
 );
 
 #[derive(Clone)]
@@ -100,31 +103,42 @@ impl Node {
             )
         });
 
-        let protocols_negotiated = multiplexed.map(move |(peer, connection), _| {
+        let protocols_negotiated = multiplexed.map(move |(peer, mut connection), _| {
             let control = Control {
                 inner: connection.control(),
                 negotiation_timeout,
             };
 
-            let incoming = yamux::into_stream(connection)
-                .err_into::<Error>()
-                .and_then(move |stream| {
+            let (mut sender, receiver) = mpsc::unbounded();
+
+            let worker = async move {
+                while let Ok(Some(stream)) = connection.next_stream().await {
+                    let _ = sender.send(stream).await; // ignore error for now.
+                }
+            }
+            .boxed();
+
+            let incoming = receiver
+                .then(move |stream| {
                     let supported_protocols = supported_inbound_protocols.clone();
 
                     async move {
-                        let (protocol, stream) = tokio::time::timeout(
+                        let result = tokio::time::timeout(
                             negotiation_timeout,
                             multistream_select::listener_select_proto(stream, &supported_protocols),
                         )
-                        .await
-                        .map_err(|_| Error::NegotiationTimeoutReached)??;
+                        .await;
 
-                        Result::<_, Error>::Ok((stream, *protocol)) // TODO: Do not return anyhow here so we can track protocol negotiation failures separately!
+                        match result {
+                            Ok(Ok((protocol, stream))) => Ok(Ok((stream, *protocol))),
+                            Ok(Err(e)) => Ok(Err(Error::NegotiationFailed(e))),
+                            Err(_timeout) => Ok(Err(Error::NegotiationTimeoutReached)),
+                        }
                     }
                 })
                 .boxed();
 
-            (peer, control, incoming)
+            (peer, control, incoming, worker)
         });
 
         let timeout_applied = TransportTimeout::new(protocols_negotiated, upgrade_timeout);
@@ -173,22 +187,25 @@ impl Control {
     pub async fn open_substream(
         &mut self,
         protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
-    ) -> Result<Negotiated<yamux::Stream>, Error> {
-        // TODO: Return a proper error enum here!
+    ) -> Result<Result<Negotiated<yamux::Stream>, Error>, yamux::ConnectionError> {
+        let stream = self.inner.open_stream().await?;
 
-        let stream = tokio::time::timeout(self.negotiation_timeout, async {
-            let stream = self.inner.open_stream().await?;
-
+        let result = tokio::time::timeout(self.negotiation_timeout, async {
             let (_, stream) =
                 multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
                     .await?;
 
-            Result::<_, Error>::Ok(stream)
+            Ok(stream)
         })
-        .await
-        .map_err(|_| Error::NegotiationTimeoutReached)??;
+        .await;
 
-        Ok(stream)
+        let stream = match result {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => return Ok(Err(Error::NegotiationFailed(e))),
+            Err(_timeout) => return Ok(Err(Error::NegotiationTimeoutReached)),
+        };
+
+        Ok(Ok(stream))
     }
 
     pub async fn close_connection(mut self) {
@@ -200,8 +217,6 @@ impl Control {
 pub enum Error {
     #[error("Timeout in protocol negotiation")]
     NegotiationTimeoutReached,
-    #[error("Multiplexer error")]
-    Multiplexer(#[from] yamux::ConnectionError),
     #[error("Failed to negotiate protcol")]
     NegotiationFailed(#[from] NegotiationError),
 }
