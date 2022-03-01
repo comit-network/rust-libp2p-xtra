@@ -9,6 +9,7 @@ use libp2p_stream_xtra::{
     Connect, Disconnect, GetConnectionStats, ListenOn, NewInboundSubstream, Node, OpenSubstream,
 };
 use std::collections::HashSet;
+use std::time::Duration;
 use tokio_tasks::Tasks;
 use xtra::message_channel::StrongMessageChannel;
 use xtra::spawn::TokioGlobalSpawnExt;
@@ -106,6 +107,7 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
     let alice = Node::new(
         MemoryTransport::default(),
         alice_id.clone(),
+        Duration::from_secs(20),
         alice_inbound_substream_handlers,
     )
     .create(None)
@@ -113,6 +115,7 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
     let bob = Node::new(
         MemoryTransport::default(),
         bob_id.clone(),
+        Duration::from_secs(20),
         bob_inbound_substream_handlers,
     )
     .create(None)

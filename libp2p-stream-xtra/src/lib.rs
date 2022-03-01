@@ -19,7 +19,6 @@ use xtra_productivity::xtra_productivity;
 
 // TODO:
 // 4. Think about load testing
-// 5. Make timeouts configurable
 // 6. Audit for deadlocks (always use async sending in message channels?)
 // 7. Clean up inbound substream channels if disconnected? => No because it might be supervised and get reconnected again.
 pub struct Node {
@@ -68,6 +67,7 @@ impl Node {
     pub fn new<T, const N: usize>(
         transport: T,
         identity: Keypair,
+        connection_timeout: Duration,
         inbound_substream_handlers: [(
             &'static str,
             Box<dyn StrongMessageChannel<NewInboundSubstream>>,
@@ -89,7 +89,7 @@ impl Node {
                     .iter()
                     .map(|(proto, _)| *proto)
                     .collect(),
-                Duration::from_secs(20),
+                connection_timeout,
             ),
             tasks: Tasks::default(),
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
