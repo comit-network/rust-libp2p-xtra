@@ -43,6 +43,7 @@ pub struct Node {
     inbound_substream_channels:
         HashMap<&'static str, Box<dyn StrongMessageChannel<NewInboundSubstream>>>,
     listen_addresses: HashSet<Multiaddr>,
+    inflight_connections: HashSet<PeerId>,
 }
 
 /// Open a substream to the provided peer.
@@ -93,7 +94,9 @@ pub enum Error {
     #[error("Bad connection")]
     BadConnection(#[from] yamux::ConnectionError), // TODO(public-api): Consider removing this.
     #[error("Address {0} does not end with a peer ID")]
-    NoPeerIdInAddress(Multiaddr)
+    NoPeerIdInAddress(Multiaddr),
+    #[error("Either currently connecting or already connected to peer {0}")]
+    AlreadyConnected(PeerId),
 }
 
 impl Node {
@@ -137,6 +140,7 @@ impl Node {
             inbound_substream_channels: inbound_substream_handlers.into_iter().collect(),
             controls: HashMap::default(),
             listen_addresses: HashSet::default(),
+            inflight_connections: HashSet::default(),
         }
     }
 
@@ -157,6 +161,7 @@ impl Node {
 #[xtra_productivity]
 impl Node {
     async fn handle(&mut self, msg: NewConnection, ctx: &mut Context<Self>) {
+        self.inflight_connections.remove(&msg.peer);
         let this = ctx.address().expect("we are alive");
 
         let NewConnection {
@@ -222,6 +227,7 @@ impl Node {
         tracing::debug!("Failed to connect: {:#}", msg.error);
         let peer = msg.peer;
 
+        self.inflight_connections.remove(&peer);
         self.drop_connection(&peer);
     }
 
@@ -248,6 +254,11 @@ impl Node {
             .extract_peer_id()
             .ok_or_else(|| Error::NoPeerIdInAddress(msg.0.clone()))?;
 
+        if self.inflight_connections.contains(&peer) || self.controls.contains_key(&peer){
+            return Err(Error::AlreadyConnected(peer));
+        }
+
+        self.inflight_connections.insert(peer);
         self.tasks.add_fallible(
             {
                 let node = self.node.clone();

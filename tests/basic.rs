@@ -89,21 +89,19 @@ async fn cannot_open_substream_for_unhandled_protocol() {
 
 #[tokio::test]
 async fn cannot_connect_twice() {
-    let (_, bob_peer_id, alice, _bob, alice_listen) = alice_and_bob([], []).await;
+    let (alice_peer_id, _bob_peer_id, _alice, bob, alice_listen) = alice_and_bob([], []).await;
 
-    let error = alice
+    let error = bob
         .send(Connect(
-            alice_listen.with(Protocol::P2p(bob_peer_id.into())),
+            alice_listen.with(Protocol::P2p(alice_peer_id.into())),
         ))
         .await
         .unwrap()
         .unwrap_err();
 
-    dbg!(&error);
-
     assert!(matches!(
         error,
-        libp2p_xtra::Error::NegotiationFailed(libp2p_xtra::NegotiationError::Failed)
+        libp2p_xtra::Error::AlreadyConnected(twin) if twin == alice_peer_id
     ))
 }
 
