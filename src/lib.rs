@@ -92,6 +92,8 @@ pub enum Error {
     NegotiationFailed(#[from] NegotiationError), // TODO(public-api): Consider breaking this up.
     #[error("Bad connection")]
     BadConnection(#[from] yamux::ConnectionError), // TODO(public-api): Consider removing this.
+    #[error("Address {0} does not end with a peer ID")]
+    NoPeerIdInAddress(Multiaddr)
 }
 
 impl Node {
@@ -237,14 +239,14 @@ impl Node {
         }
     }
 
-    async fn handle(&mut self, msg: Connect, ctx: &mut Context<Self>) -> Result<()> {
+    async fn handle(&mut self, msg: Connect, ctx: &mut Context<Self>) -> Result<(), Error> {
         let this = ctx.address().expect("we are alive");
 
         let peer = msg
             .0
             .clone()
             .extract_peer_id()
-            .context("Failed to extract PeerId from address")?;
+            .ok_or_else(|| Error::NoPeerIdInAddress(msg.0.clone()))?;
 
         self.tasks.add_fallible(
             {

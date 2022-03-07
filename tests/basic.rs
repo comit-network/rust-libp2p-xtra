@@ -2,6 +2,8 @@ use anyhow::Context as _;
 use anyhow::Result;
 use asynchronous_codec::Bytes;
 use futures::{SinkExt, StreamExt};
+use libp2p_core::multiaddr::Protocol;
+use libp2p_core::Multiaddr;
 use libp2p_xtra::libp2p::identity::Keypair;
 use libp2p_xtra::libp2p::transport::MemoryTransport;
 use libp2p_xtra::libp2p::PeerId;
@@ -19,7 +21,7 @@ use xtra_productivity::xtra_productivity;
 #[tokio::test]
 async fn hello_world() {
     let alice_hello_world_handler = HelloWorld::default().create(None).spawn_global();
-    let (alice_peer_id, _, _alice, bob) = alice_and_bob(
+    let (alice_peer_id, _, _alice, bob, _) = alice_and_bob(
         [(
             "/hello-world/1.0.0",
             alice_hello_world_handler.clone_channel(),
@@ -44,7 +46,7 @@ async fn hello_world() {
 
 #[tokio::test]
 async fn after_connect_see_each_other_as_connected() {
-    let (alice_peer_id, bob_peer_id, alice, bob) = alice_and_bob([], []).await;
+    let (alice_peer_id, bob_peer_id, alice, bob, _) = alice_and_bob([], []).await;
 
     let alice_stats = alice.send(GetConnectionStats).await.unwrap();
     let bob_stats = bob.send(GetConnectionStats).await.unwrap();
@@ -55,7 +57,7 @@ async fn after_connect_see_each_other_as_connected() {
 
 #[tokio::test]
 async fn disconnect_is_reflected_in_stats() {
-    let (_, bob_peer_id, alice, bob) = alice_and_bob([], []).await;
+    let (_, bob_peer_id, alice, bob, _) = alice_and_bob([], []).await;
 
     alice.send(Disconnect(bob_peer_id)).await.unwrap();
 
@@ -68,7 +70,7 @@ async fn disconnect_is_reflected_in_stats() {
 
 #[tokio::test]
 async fn cannot_open_substream_for_unhandled_protocol() {
-    let (_, bob_peer_id, alice, _bob) = alice_and_bob([], []).await;
+    let (_, bob_peer_id, alice, _bob, _) = alice_and_bob([], []).await;
 
     let error = alice
         .send(OpenSubstream {
@@ -87,7 +89,22 @@ async fn cannot_open_substream_for_unhandled_protocol() {
 
 #[tokio::test]
 async fn cannot_connect_twice() {
-    assert!(false)
+    let (_, bob_peer_id, alice, _bob, alice_listen) = alice_and_bob([], []).await;
+
+    let error = alice
+        .send(Connect(
+            alice_listen.with(Protocol::P2p(bob_peer_id.into())),
+        ))
+        .await
+        .unwrap()
+        .unwrap_err();
+
+    dbg!(&error);
+
+    assert!(matches!(
+        error,
+        libp2p_xtra::Error::NegotiationFailed(libp2p_xtra::NegotiationError::Failed)
+    ))
 }
 
 #[tokio::test]
@@ -109,7 +126,7 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
         &'static str,
         Box<dyn StrongMessageChannel<NewInboundSubstream>>,
     ); BN],
-) -> (PeerId, PeerId, Address<Node>, Address<Node>) {
+) -> (PeerId, PeerId, Address<Node>, Address<Node>, Multiaddr) {
     let port = rand::random::<u16>();
 
     let alice_id = Keypair::generate_ed25519();
@@ -134,10 +151,9 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
     .create(None)
     .spawn_global();
 
-    alice
-        .send(ListenOn(format!("/memory/{port}").parse().unwrap()))
-        .await
-        .unwrap();
+    let alice_listen = format!("/memory/{port}").parse::<Multiaddr>().unwrap();
+
+    alice.send(ListenOn(alice_listen.clone())).await.unwrap();
 
     bob.send(Connect(
         format!("/memory/{port}/p2p/{alice_peer_id}")
@@ -148,7 +164,7 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
     .unwrap()
     .unwrap();
 
-    (alice_peer_id, bob_peer_id, alice, bob)
+    (alice_peer_id, bob_peer_id, alice, bob, alice_listen)
 }
 
 #[derive(Default)]
