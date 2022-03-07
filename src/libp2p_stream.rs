@@ -180,26 +180,26 @@ pub struct Control {
 impl Control {
     pub async fn open_substream(
         &mut self,
-        protocol: &'static str, // TODO: Pass a list in here so we can negotiate different versions?
-    ) -> Result<Result<Negotiated<yamux::Stream>, Error>, yamux::ConnectionError> {
+        protocols: Vec<&'static str>,
+    ) -> Result<Result<(&'static str, Negotiated<yamux::Stream>), Error>, yamux::ConnectionError>
+    {
         let stream = self.inner.open_stream().await?;
 
         let result = tokio::time::timeout(self.connection_timeout, async {
-            let (_, stream) =
-                multistream_select::dialer_select_proto(stream, vec![protocol], Version::V1)
-                    .await?;
+            let (protocol, stream) =
+                multistream_select::dialer_select_proto(stream, protocols, Version::V1).await?;
 
-            Ok(stream)
+            Ok((protocol, stream))
         })
         .await;
 
-        let stream = match result {
-            Ok(Ok(stream)) => stream,
+        let (protocol, stream) = match result {
+            Ok(Ok(ok)) => ok,
             Ok(Err(e)) => return Ok(Err(Error::NegotiationFailed(e))),
             Err(_timeout) => return Ok(Err(Error::NegotiationTimeoutReached)),
         };
 
-        Ok(Ok(stream))
+        Ok(Ok((protocol, stream)))
     }
 
     pub async fn close_connection(mut self) {

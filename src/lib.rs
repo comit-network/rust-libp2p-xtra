@@ -17,6 +17,7 @@ use libp2p_core::{Multiaddr, Negotiated, PeerId, Transport};
 use libp2p_stream::Control;
 use multiaddress_ext::MultiaddrExt as _;
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::time::Duration;
 use thiserror::Error;
 use tokio_tasks::Tasks;
@@ -48,10 +49,41 @@ pub struct Node {
 
 /// Open a substream to the provided peer.
 ///
-/// Fails if we are not connected to the peer or the peer does not support the requested protocol.
-pub struct OpenSubstream {
-    pub peer: PeerId,
-    pub protocol: &'static str,
+/// Fails if we are not connected to the peer or the peer does not support any of the requested protocols.
+pub struct OpenSubstream<P> {
+    peer: PeerId,
+    protocols: Vec<&'static str>,
+    marker_num_protocols: PhantomData<P>,
+}
+
+pub enum Single {}
+pub enum Multiple {}
+
+impl OpenSubstream<Single> {
+    /// Constructs [`OpenSubstream`] with a single protocol.
+    ///
+    /// We will only attempt to negotiate the given protocol. If the other node does not speak this protocol, negotiation will fail.
+    pub fn single_protocol(peer: PeerId, protocol: &'static str) -> Self {
+        Self {
+            peer,
+            protocols: vec![protocol],
+            marker_num_protocols: PhantomData,
+        }
+    }
+}
+
+impl OpenSubstream<Multiple> {
+    /// Constructs [`OpenSubstream`] with multiple protocols.
+    ///
+    /// The given protocols will be tried **in order**, with the first successful one being used.
+    /// Specifying multiple protocols can useful to maintain backwards-compatibility. A node can attempt to first establish a substream with a new protocol and falling back to older versions in case the new version is not supported.
+    pub fn multiple_protocols(peer: PeerId, protocols: Vec<&'static str>) -> Self {
+        Self {
+            peer,
+            protocols,
+            marker_num_protocols: PhantomData,
+        }
+    }
 }
 
 /// Connect to the given [`Multiaddr`].
@@ -156,6 +188,27 @@ impl Node {
             drop(tasks);
         });
     }
+
+    async fn open_substream(
+        &mut self,
+        peer: PeerId,
+        protocols: Vec<&'static str>,
+    ) -> Result<(&'static str, Substream), Error> {
+        let (control, _) = self
+            .controls
+            .get_mut(&peer)
+            .ok_or_else(|| Error::NoConnection(peer))?;
+
+        let (protocol, stream) = control
+            .open_substream(protocols)
+            .await?
+            .map_err(|e| match e {
+                libp2p_stream::Error::NegotiationFailed(e) => Error::NegotiationFailed(e),
+                libp2p_stream::Error::NegotiationTimeoutReached => Error::NegotiationTimeoutReached,
+            })?;
+
+        Ok((protocol, stream))
+    }
 }
 
 #[xtra_productivity]
@@ -254,7 +307,7 @@ impl Node {
             .extract_peer_id()
             .ok_or_else(|| Error::NoPeerIdInAddress(msg.0.clone()))?;
 
-        if self.inflight_connections.contains(&peer) || self.controls.contains_key(&peer){
+        if self.inflight_connections.contains(&peer) || self.controls.contains_key(&peer) {
             return Err(Error::AlreadyConnected(peer));
         }
 
@@ -329,24 +382,25 @@ impl Node {
         );
     }
 
-    async fn handle(&mut self, msg: OpenSubstream) -> Result<Substream, Error> {
+    async fn handle(&mut self, msg: OpenSubstream<Single>) -> Result<Substream, Error> {
         let peer = msg.peer;
-        let protocol = msg.protocol;
+        let protocols = msg.protocols;
 
-        let (control, _) = self
-            .controls
-            .get_mut(&peer)
-            .ok_or_else(|| Error::NoConnection(peer))?;
-
-        let stream = control
-            .open_substream(protocol)
-            .await?
-            .map_err(|e| match e {
-                libp2p_stream::Error::NegotiationFailed(e) => Error::NegotiationFailed(e),
-                libp2p_stream::Error::NegotiationTimeoutReached => Error::NegotiationTimeoutReached,
-            })?;
+        let (_, stream) = self.open_substream(peer, protocols).await?;
 
         Ok(stream)
+    }
+
+    async fn handle(
+        &mut self,
+        msg: OpenSubstream<Multiple>,
+    ) -> Result<(&'static str, Substream), Error> {
+        let peer = msg.peer;
+        let protocols = msg.protocols;
+
+        let (protocol, stream) = self.open_substream(peer, protocols).await?;
+
+        Ok((protocol, stream))
     }
 }
 

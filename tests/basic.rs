@@ -31,10 +31,10 @@ async fn hello_world() {
     .await;
 
     let bob_to_alice = bob
-        .send(OpenSubstream {
-            peer: alice_peer_id,
-            protocol: "/hello-world/1.0.0",
-        })
+        .send(OpenSubstream::single_protocol(
+            alice_peer_id,
+            "/hello-world/1.0.0",
+        ))
         .await
         .unwrap()
         .unwrap();
@@ -73,10 +73,10 @@ async fn cannot_open_substream_for_unhandled_protocol() {
     let (_, bob_peer_id, alice, _bob, _) = alice_and_bob([], []).await;
 
     let error = alice
-        .send(OpenSubstream {
-            peer: bob_peer_id,
-            protocol: "/foo/bar/1.0.0",
-        })
+        .send(OpenSubstream::single_protocol(
+            bob_peer_id,
+            "/foo/bar/1.0.0",
+        ))
         .await
         .unwrap()
         .unwrap_err();
@@ -106,8 +106,57 @@ async fn cannot_connect_twice() {
 }
 
 #[tokio::test]
-async fn can_request_two_protocols() {
-    assert!(false)
+async fn chooses_first_protocol_in_list_of_multiple() {
+    let alice_hello_world_handler = HelloWorld::default().create(None).spawn_global();
+    let (alice_peer_id, _, _alice, bob, _) = alice_and_bob(
+        [(
+            "/hello-world/1.0.0",
+            alice_hello_world_handler.clone_channel(),
+        )],
+        [],
+    )
+        .await;
+
+    let (actual_protocol, _) = bob
+        .send(OpenSubstream::multiple_protocols(
+            alice_peer_id,
+            vec![
+                "/hello-world/1.0.0",
+                "/foo-bar/1.0.0", // This is unsupported by Alice.
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(actual_protocol, "/hello-world/1.0.0");
+}
+
+#[tokio::test]
+async fn falls_back_to_next_protocol_if_unsupported() {
+    let alice_hello_world_handler = HelloWorld::default().create(None).spawn_global();
+    let (alice_peer_id, _, _alice, bob, _) = alice_and_bob(
+        [(
+            "/hello-world/1.0.0",
+            alice_hello_world_handler.clone_channel(),
+        )],
+        [],
+    )
+        .await;
+
+    let (actual_protocol, _) = bob
+        .send(OpenSubstream::multiple_protocols(
+            alice_peer_id,
+            vec![
+                "/foo-bar/1.0.0", // This is unsupported by Alice.
+                "/hello-world/1.0.0",
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(actual_protocol, "/hello-world/1.0.0");
 }
 
 #[tokio::test]
