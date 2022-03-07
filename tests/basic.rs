@@ -159,11 +159,6 @@ async fn falls_back_to_next_protocol_if_unsupported() {
     assert_eq!(actual_protocol, "/hello-world/1.0.0");
 }
 
-#[tokio::test]
-async fn connection_non_listening_peer_times_out() {
-    assert!(false)
-}
-
 async fn alice_and_bob<const AN: usize, const BN: usize>(
     alice_inbound_substream_handlers: [(
         &'static str,
