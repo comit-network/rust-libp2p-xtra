@@ -115,7 +115,7 @@ async fn chooses_first_protocol_in_list_of_multiple() {
         )],
         [],
     )
-        .await;
+    .await;
 
     let (actual_protocol, _) = bob
         .send(OpenSubstream::multiple_protocols(
@@ -142,7 +142,7 @@ async fn falls_back_to_next_protocol_if_unsupported() {
         )],
         [],
     )
-        .await;
+    .await;
 
     let (actual_protocol, _) = bob
         .send(OpenSubstream::multiple_protocols(
@@ -176,27 +176,8 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
 ) -> (PeerId, PeerId, Address<Node>, Address<Node>, Multiaddr) {
     let port = rand::random::<u16>();
 
-    let alice_id = Keypair::generate_ed25519();
-    let alice_peer_id = alice_id.public().to_peer_id();
-    let bob_id = Keypair::generate_ed25519();
-    let bob_peer_id = bob_id.public().to_peer_id();
-
-    let alice = Node::new(
-        MemoryTransport::default(),
-        alice_id.clone(),
-        Duration::from_secs(20),
-        alice_inbound_substream_handlers,
-    )
-    .create(None)
-    .spawn_global();
-    let bob = Node::new(
-        MemoryTransport::default(),
-        bob_id.clone(),
-        Duration::from_secs(20),
-        bob_inbound_substream_handlers,
-    )
-    .create(None)
-    .spawn_global();
+    let (alice_peer_id, alice) = make_node(alice_inbound_substream_handlers);
+    let (bob_peer_id, bob) = make_node(bob_inbound_substream_handlers);
 
     let alice_listen = format!("/memory/{port}").parse::<Multiaddr>().unwrap();
 
@@ -212,6 +193,27 @@ async fn alice_and_bob<const AN: usize, const BN: usize>(
     .unwrap();
 
     (alice_peer_id, bob_peer_id, alice, bob, alice_listen)
+}
+
+fn make_node<const N: usize>(
+    substream_handlers: [(
+        &'static str,
+        Box<dyn StrongMessageChannel<NewInboundSubstream>>,
+    ); N],
+) -> (PeerId, Address<Node>) {
+    let id = Keypair::generate_ed25519();
+    let peer_id = id.public().to_peer_id();
+
+    let node = Node::new(
+        MemoryTransport::default(),
+        id.clone(),
+        Duration::from_secs(20),
+        substream_handlers,
+    )
+    .create(None)
+    .spawn_global();
+
+    (peer_id, node)
 }
 
 #[derive(Default)]
